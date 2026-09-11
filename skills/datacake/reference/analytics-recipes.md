@@ -3,6 +3,7 @@
 ## Contents
 
 - Setup for scripts
+- No token yet
 - Recipe: inventory of a workspace
 - Recipe: bulk history for many devices
 - Recipe: consumption analysis for meters
@@ -18,6 +19,18 @@
 - Token in `DATACAKE_TOKEN` (or `~/.datacake/token`). Identify targets with `python3 scripts/discover.py <workspace>`.
 - `scripts/dc.py` runs ad-hoc queries; `scripts/history_to_csv.py` dumps history to CSV; both are dependency-free Python 3.
 - In your own scripts, reuse the `gql()` helper pattern from `api-basics.md` (stdlib) or `pip install requests`.
+
+## No token yet
+
+Do not stop. Draft the queries against `reference/schema.graphql`, keep identifiers as clearly marked placeholders, and give the user the exact commands to run on their side:
+
+```bash
+export DATACAKE_TOKEN=...                      # read-only API user preferred
+python3 scripts/discover.py                    # find the workspace id/slug
+python3 scripts/discover.py <workspace> --json > inventory.json
+```
+
+Ask them to paste the relevant part of the output (products with field identifiers, semantics, tags) or run the script themselves; then finish the analysis with real identifiers. For fleet-wide questions (counts, averages, offline devices) semantics work without knowing any identifier, so those queries can be final immediately.
 
 ## Recipe: inventory of a workspace
 

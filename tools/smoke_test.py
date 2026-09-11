@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Live smoke test for the Datacake skill: runs the canonical read queries against a
-real workspace and prints PASS/FAIL per check plus response-shape notes.
+real workspace and prints PASS/FAIL per check plus response-shape notes. Includes an
+organizations section (admin permissions, cross-workspace member visibility, white label sites).
 
 Usage:
   DATACAKE_TOKEN=... python3 tools/smoke_test.py [--workspace <id|slug>] [--json shapes.json]
@@ -255,6 +256,54 @@ def main():
         shapes["rulesNG"] = w["rulesNG"]
         shapes["deviceFolders"] = (w.get("deviceFolders") or "")[:500]
         shapes["zones"] = w["zones"]
+
+    # 8b. organizations, admins, cross-workspace member visibility, white label sites (read-only)
+    r = gql("""query { user { id isApiuser whitelabelSites { id title domain brand } }
+      organizations(first: 20, orderBy: NAME_ASC) { totalCount edges { node { id name permissions
+        owner { id user { id email } }
+        userRelationships(first: 5) { totalCount edges { node { id permissions user { id email } } } }
+        workspaces(first: 50) { totalCount edges { node { id slug name memberCount deviceCount myPermissions } } }
+        whitelabelSites { totalCount } } } } }""", token=token)
+    orgs = [e["node"] for e in (((r.get("data") or {}).get("organizations") or {}).get("edges") or []) if e]
+    shapes["organizations"] = {"errors": r.get("errors"), "count": len(orgs),
+                               "sample": [{k: v for k, v in o.items() if k != "workspaces"} for o in orgs[:2]]}
+    check("organizations query", "data" in r and not r.get("errors"), "%d organizations, whitelabelSites=%s errors=%s" % (
+        len(orgs), len(((r.get("data") or {}).get("user") or {}).get("whitelabelSites") or []), json.dumps(r.get("errors"))[:200]))
+    member_ids = {w["id"] for w in workspaces}
+    if orgs:
+        o = orgs[0]
+        print("   org %s: permissions=%s admins=%s workspaces=%s" % (o["name"], o["permissions"],
+              (o["userRelationships"] or {}).get("totalCount"), (o["workspaces"] or {}).get("totalCount")))
+        org_ws = [e["node"] for e in ((o.get("workspaces") or {}).get("edges") or []) if e]
+        non_member = [w for w in org_ws if w["id"] not in member_ids]
+        check("org.workspaces lists non-member workspaces", True, "%d of %d workspaces are not memberships of this token; myPermissions there=%s" % (
+            len(non_member), len(org_ws), [w["myPermissions"] for w in non_member[:3]]))
+        if non_member:
+            r2 = gql("""query($id: String!) { workspace(id: $id) { id memberCount deviceCount myPermissions
+              userRelationships { id user { email } } invitedUsers { email } devicesFiltered(pageSize: 1) { total } } }""",
+                     {"id": non_member[0]["id"]}, token)
+            w2 = (r2.get("data") or {}).get("workspace") or {}
+            shapes["non_member_workspace"] = r2
+            check("non-member workspace: members readable by org admin?", "data" in r2,
+                  "workspace=%s userRelationships=%s devices=%s errors=%s" % (
+                      bool(w2), "readable(%d)" % len(w2["userRelationships"]) if w2.get("userRelationships") is not None else "null",
+                      (w2.get("devicesFiltered") or {}).get("total") if w2 else None,
+                      [((e.get("extensions") or {}).get("code"), e.get("message")) for e in r2.get("errors") or []][:2]))
+        else:
+            print("   (token is a member of every workspace of this organization; cross-workspace visibility not testable)")
+    else:
+        print("   (no organization admin permissions on this token; organization checks skipped)")
+    if "members" in (ws["myPermissions"] or []):
+        r3 = gql("""query($id: String!) { workspace(id: $id) {
+          userRelationships { id permissions allDevicesPermissionExists isOrganizationOwner user { id email isApiuser } deviceRelationships { id permissions device { id } } }
+          invitedUsers { id email permissions deviceInvites { id permissions device { id } } }
+          apiUserRelationships { id permissions user { id name created } } } }""", {"id": wid}, token)
+        w3 = (r3.get("data") or {}).get("workspace") or {}
+        shapes["members"] = {"members": len(w3.get("userRelationships") or []), "invites": len(w3.get("invitedUsers") or []),
+                             "apiUsers": len(w3.get("apiUserRelationships") or []), "errors": r3.get("errors")}
+        check("workspace members/invites/api users", bool(w3) and not r3.get("errors"), json.dumps(shapes["members"])[:200])
+    else:
+        print("   (no 'members' permission in %s; member list check skipped)" % slug)
 
     # 9. error shape: nonexistent workspace + unknown field
     r = gql('query { workspace(id: "00000000-0000-0000-0000-000000000000") { id } }', token=token)

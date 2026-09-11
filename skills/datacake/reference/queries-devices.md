@@ -239,7 +239,7 @@ query Members($workspaceId: String!) {
 }
 ```
 
-Reading members needs the `members` permission. For "what may I do with this device": `device { myPermissions(workspace: $workspaceId) }`.
+Reading members needs the `members` permission. For "what may I do with this device": `device { myPermissions(workspace: $workspaceId) }`. Organizations, organization admins, invites, white label users, audit logs and the admin recipes (mass invite, moving members) are in `organizations-and-members.md`.
 
 ## Public device dashboards
 

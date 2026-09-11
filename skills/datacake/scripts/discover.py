@@ -7,6 +7,7 @@ Usage:
   python3 scripts/discover.py <workspace-id|slug>     # map one workspace
   python3 scripts/discover.py <workspace> --devices 20 --inactive --product "Sensor"
   python3 scripts/discover.py <workspace> --json      # machine-readable output
+  python3 scripts/discover.py --orgs                  # organizations the token administers, with their workspaces
 
 Token: $DATACAKE_TOKEN or ~/.datacake/token (or --token). Standard library only.
 """
@@ -24,6 +25,29 @@ UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 WORKSPACES_QUERY = """
 query Workspaces { allWorkspaces { id name slug deviceCount memberCount myPermissions } }
+"""
+
+ORGS_QUERY = """
+query Organizations($after: String) {
+  user { id email isApiuser }
+  organizations(orderBy: NAME_ASC, first: 50, after: $after) {
+    totalCount
+    pageInfo { hasNextPage endCursor }
+    edges {
+      node {
+        id name permissions totalDevices subscriptionUnpaid
+        entitlementWorkspacesQuota entitlementRemainingWorkspacesQuota
+        owner { user { email } }
+        userRelationships { totalCount }
+        whitelabelSites { totalCount edges { node { id title domain } } }
+        workspaces(first: 100, orderBy: NAME_ASC) {
+          totalCount
+          edges { node { id name slug deviceCount memberCount myPermissions } }
+        }
+      }
+    }
+  }
+}
 """
 
 WORKSPACE_QUERY = """
@@ -86,17 +110,65 @@ def table(rows, headers):
     return "\n".join(out)
 
 
+def print_orgs(token, args):
+    orgs, after, user = [], None, None
+    while True:
+        data = gql(ORGS_QUERY, {"after": after}, token, args.endpoint)
+        user = user or data.get("user")
+        conn = data.get("organizations") or {}
+        orgs.extend(e["node"] for e in conn.get("edges") or [] if e and e.get("node"))
+        if not (conn.get("pageInfo") or {}).get("hasNextPage"):
+            break
+        after = conn["pageInfo"]["endCursor"]
+    if args.json:
+        print(json.dumps({"user": user, "organizations": orgs}, indent=2, ensure_ascii=False))
+        return
+    if user and user.get("isApiuser"):
+        print("token belongs to an API user: API users have no organization relationships (use a personal token)")
+    if not orgs:
+        print("no organizations: this token holds no organization admin permissions (workspace membership alone is not enough)")
+        return
+    print("user: %s\norganizations administered: %d\n" % ((user or {}).get("email"), len(orgs)))
+    for o in orgs:
+        wl = (o.get("whitelabelSites") or {})
+        print("ORGANIZATION %s  (id: %s)" % (o["name"], o["id"]))
+        print("  my permissions: %s   owner: %s   admins: %s   devices: %s   workspaces: %s/%s%s" % (
+            ", ".join(o["permissions"] or []) or "-", ((o.get("owner") or {}).get("user") or {}).get("email"),
+            (o.get("userRelationships") or {}).get("totalCount"), o.get("totalDevices"),
+            (o.get("workspaces") or {}).get("totalCount"), o.get("entitlementWorkspacesQuota"),
+            "   SUBSCRIPTION UNPAID" if o.get("subscriptionUnpaid") else ""))
+        sites = [e["node"] for e in wl.get("edges") or [] if e and e.get("node")]
+        if sites:
+            print("  white label sites: " + ", ".join("%s (%s, id %s)" % (x["title"], x.get("domain") or "no domain", x["id"]) for x in sites))
+        ws = [e["node"] for e in (o.get("workspaces") or {}).get("edges") or [] if e and e.get("node")]
+        if ws:
+            print(table([[w["id"], w["slug"], w["name"], w.get("deviceCount"), w.get("memberCount"),
+                          ",".join(w["myPermissions"] or []) or "(not a member)"] for w in ws],
+                        ["id", "slug", "name", "devices", "members", "myPermissions"]))
+        if (o.get("workspaces") or {}).get("totalCount", 0) > len(ws):
+            print("  (first %d of %d workspaces shown; use --json or OrganizationWorkspaces in organizations-and-members.md to page)" % (
+                len(ws), o["workspaces"]["totalCount"]))
+        print()
+    print("Workspaces marked '(not a member)' cannot be read for members or devices with this token; invite the operator with the 'members' permission first.")
+    print("Next: python3 scripts/members.py list <workspace>   or   python3 scripts/members.py org-list <organization id>")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("workspace", nargs="?", help="workspace UUID or slug; omit to list workspaces")
     ap.add_argument("--devices", type=int, default=10, help="number of sample devices to show (default 10)")
     ap.add_argument("--inactive", action="store_true", help="include inactive fields")
     ap.add_argument("--product", help="only show products whose name contains this text")
+    ap.add_argument("--orgs", action="store_true", help="list organizations (admin view) instead of workspaces")
     ap.add_argument("--json", action="store_true", help="print raw JSON instead of tables")
     ap.add_argument("--token")
     ap.add_argument("--endpoint", default=ENDPOINT)
     args = ap.parse_args()
     token = token_from_env(args.token)
+
+    if args.orgs:
+        print_orgs(token, args)
+        return
 
     if not args.workspace:
         data = gql(WORKSPACES_QUERY, {}, token, args.endpoint)

@@ -8,6 +8,7 @@ How Datacake is structured, written for building on the GraphQL API. Every noun 
 - Organization
 - Workspace
 - Members, API users and permissions
+- White label sites
 - Product
 - Device
 - Measurement fields
@@ -43,6 +44,11 @@ Organization (billing, quotas, admins, white label)
 | Field definition | `ProductMeasurementFieldType` | `id` UUID, `fieldName` (identifier, UPPER_SNAKE by convention, immutable) | `verboseFieldName` is the editable display name |
 | Field value | `DeviceCurrentMeasurementType` | device + `fieldName` | Latest value plus time-range functions |
 | User | `UserType` | `id` UUID, `email` | Also API users (`isApiuser`) |
+| Workspace membership | `UserWorkspaceRelationshipType` | `id` UUID | user + workspace + permissions + device relationships; `apiUserRelationships` for API users |
+| Organization admin | `UserOrganizationRelationshipType` | `id` (Relay) | user + organization permissions; ids used by the organization member mutations |
+| Pending invite | `UserWorkspaceInviteType` | `id` UUID, `email` | `workspace.invitedUsers`; resolves at signup |
+| White label site | `WhitelabelSiteType` | `id` (Relay, usable as UUID), `brand`, `domain` | `user.whitelabelSites`, `whitelabelSite(id:)`, `branding`, `brandingForDomain(domain:)` |
+| White label user / audit entry | `WhitelabelUserType` / `AuditLogEntryType` | `id` (Relay) | connections on the site; user ids differ from `UserType.id` |
 | Rule (new engine) | `RuleNGType` | `id` UUID | Workspace-level, filters devices by product/tags |
 | Dashboard (global) | `DashboardType` | `id` UUID | Device dashboards live in `product.dashboards` |
 | Zone | `ZoneType` | `id` (Relay global ID) | Relay connections: `edges { node { … } }` |
@@ -54,8 +60,9 @@ Relay-style types (`Node` interface, `*Connection`, `edges`, `pageInfo`, `totalC
 
 - Created with the user's first workspace. Groups workspaces that share billing, device quota, SMS credits, add-ons, white label sites and SSO.
 - Billing plan (`billingPlan`, Starter/paid packages, monthly or yearly) defines entitlements: device quota, rules quota, webhooks quota, workspaces quota, exports options, rule log retention, dashboard history, SSO. Device quota can be shared across workspaces or assigned per workspace (`deviceQuotaDistributionMode`, `assignWorkspaceQuota`). SMS credits likewise (`smsQuotaDistributionMode`, `transferSmsQuota`).
-- Administrators (`userRelationships`, `UserOrganizationPermissions`): `create_workspaces`, `members`, `billing`, `whitelabel`, `manage_workspaces`. One owner (`owner`, transferable).
-- Organization Overview (portal) lists rules, reports and exports across all workspaces; API: `organization(id:) { workspaces { edges { node { … } } } }`.
+- Administrators (`userRelationships`, `UserOrganizationRelationshipType` with `UserOrganizationPermissions`): `create_workspaces`, `members` (manage admins), `billing`, `whitelabel`, `manage_workspaces`. One owner (`owner`, transferable with `transferOrganizationOwnership`). Admins are managed with `createUserOrganizationRelationships` (bulk, existing accounts), `updateUserOrganizationRelationships` (set/add/remove) and `deleteUserOrganizationRelationships`.
+- Organization admins and workspace members are separate lists: an admin is not automatically a member of the workspaces, and a member has no organization rights. `organization.permissions` returns the caller's own admin permissions (use it to gate admin UI); `organizations(permissionFilter:)` lists every organization the caller administers. API users have no organization relationships.
+- Organization Overview (portal) lists rules, reports and exports across all workspaces; API: `organization(id:) { workspaces { edges { node { … } } } }` shows every workspace of the organization including those the caller is not a member of (with `memberCount`, `deviceCount`, empty `myPermissions`). Full admin recipes: `organizations-and-members.md`.
 - Billing runs through Stripe; `billingPlans`, `devicePlans`, `availableAddOnPackages`, `previewPlanSwitch` expose pricing data. Custom frontends normally never touch billing.
 
 ## Workspace
@@ -72,7 +79,7 @@ Two member kinds share the same permission model:
 
 | Kind | Auth | Created by | Typical use |
 |---|---|---|---|
-| User | email + password (optionally OTP), personal API token in Account Settings | `addUserToWorkspace` (invite by email) | Humans; token carries all rights of that user in all their workspaces |
+| User | email + password (optionally OTP), personal API token in Account Settings | `addUserToWorkspace` (by email; `invited: false` = account existed and is a member now, `invited: true` = invitation email sent) | Humans; token carries all rights of that user in all their workspaces |
 | API user | token only (`apiUser.apiKey`) | `addApiUser` (Members > API Users) | Backends, kiosks, scripts; scope it to the minimum permissions and devices |
 
 Workspace permissions (`WorkspacePermissions`, checked on writes and admin reads):
@@ -87,9 +94,20 @@ Workspace permissions (`WorkspacePermissions`, checked on writes and admin reads
 | `dashboards` | create/delete global dashboards |
 | `reports`, `exports`, `zones`, `gateways`, `cakered`, `whitelabel` | the respective feature |
 
-Device permissions (`DevicePermissions`, per user per device, or workspace-wide when `allDevicesPermissionExists`): viewing is implicit for any granted device; `edit_basics` (device definition: name, location, tags, metadata, image), `edit_product` (the shared product configuration: fields, decoder, dashboard, downlinks), `record_measurements` (write values via API, MQTT or manual input). Query `device.myPermissions(workspace:)` or `user.workspaceRelationship(workspace:)`.
+Device permissions (`DevicePermissions`, per user per device, or workspace-wide when `allDevicesPermissionExists`): viewing is implicit for any granted device; `edit_basics` (device definition: name, location, tags, metadata, image), `edit_product` (the shared product configuration: fields, decoder, dashboard, downlinks), `record_measurements` (write values via API, MQTT or manual input). Query `device.myPermissions(workspace:)` or `user.workspaceRelationship(workspace:)`. Change them with `setUserDevicePermissions` (per user) or `addDevicePermissions`/`removeDevicePermissions` (per device); workspace permissions change with `updateWorkspacePermissions` (a changeset of `{ permission, permitted }`).
 
-Organization-level admins are separate from workspace members (see Organization).
+Invites: an email without an account becomes a `UserWorkspaceInviteType` in `workspace.invitedUsers` (with the pending workspace and device permissions, `deviceInvites`). It turns into a membership when the person signs up with exactly that email; there is no accept, resend or expiry mutation, only `deleteUserInvite`. The `brand` argument of `addUserToWorkspace` (and of `signup`, `addWorkspace`, `requestPasswordReset`) selects the white label site whose branding the email carries. Reading any member list needs the `members` permission in that workspace.
+
+Organization-level admins are separate from workspace members (see Organization). Everything about listing, inviting, moving and auditing members lives in `organizations-and-members.md`.
+
+## White label sites
+
+- A white label site (`WhitelabelSiteType`) is a branded copy of the portal on the customer's domain: title, logo, colours, login screen, sender address, hidden features (`hideProductConfiguration`, `disableDashboardEditing`, …), allowed device types and integrations. It belongs to an organization (`organization.whitelabelSites`, quota `entitlementWhitelabelSiteQuota`) and is managed by admins with the `whitelabel` permission; `user.whitelabelSites` lists the sites the caller may administer, `branding`/`brandingForDomain(domain:)` return the site for a login page without a token.
+- Workspaces are attached to a site (`workspace.whitelabelSite`, `updateWorkspace(whitelabelSiteId:)`, or `addWorkspace(brand:)`); the site's `brand` is passed as `brand` on `signup`, `addUserToWorkspace`, `addWorkspace` and `requestPasswordReset` so emails and links use that branding.
+- Sign-up policy: `allowSignup`, `restrictLoginToWhitelabelSite` (users of the site cannot log in on app.datacake.de or other sites), `autoAssignSignupsToOrganization` (new sign-ups land in the site's organization and share its billing instead of creating their own), `allowAddWorkspace`.
+- Users and audit: `whitelabelSite.users` (accounts that signed up on or were invited through the site, with `dateJoined`, `lastVisit`, search and sort) and `auditLogEntries` (`AuditLogEntryAction`: logins, password changes, invites, removals, permission changes, device and product deletions, downlinks, organization admin changes). Both need `organization.entitlementWhitelabelShowUsersAndLogs`. Workspace feature `WHITELABEL_USERS` marks workspaces whose members are managed through a site.
+- Enterprise SSO (WorkOS): `ssoEnabled`, `ssoDomains` with DNS verification records, `attachSsoDomain`/`detachSsoDomain`, `generateWorkosAdminPortalLink` for the customer's IT to connect their identity provider, `allowPasswordLogin: false` to enforce SSO; needs `entitlementEnterpriseSsoEnabled`.
+- Site configuration mutations (`createWhitelabelSite`, `updateWhitelabelSite`, domain and email verification, cancel/reactivate) are indexed in `schema-map.md`; ask before touching them, they change what customers see.
 
 ## Product
 

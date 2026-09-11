@@ -66,6 +66,8 @@ MAP_ENUMS = [
     "DeviceKind", "SearchTagsAnyAll", "DashboardSharingPolicy", "DevicePublicLinkMode",
     "DashboardPublicLinkMode", "RuleExecutionMode", "ExportKind", "ExportFormat",
     "ExportFieldSelection", "ExportPeriodicInterval", "WorkspaceFeatures",
+    "AuditLogEntryAction", "OrganizationUserRelationshipsOrder", "OrganizationWorkspacesOrder",
+    "WhitelabelUserOrder", "WhitelabelAuditLogEntryOrder",
 ]
 
 # Mutation themes for the generated index: first matching substring wins.

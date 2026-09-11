@@ -1,7 +1,7 @@
 {
   "name": "datacake",
   "displayName": "Datacake",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API.",
   "author": { "name": "Datacake", "url": "https://datacake.co" },
   "homepage": "https://docs.datacake.de/api/graphql-api",

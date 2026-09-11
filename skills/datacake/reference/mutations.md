@@ -47,11 +47,16 @@
 | Test decoder / formula | `tryPayloadDecoder(input)`, `tryFormula(input)` | `edit_product` |
 | Record values | REST `POST /v1/devices/<id>/record/?batch=true`, MQTT `dtck-pub/...`, `setValue(input)` | `record_measurements` |
 | Send downlink | `sendDownlink(device, downlink)` | device access (+ WRITE public link) |
-| Create workspace | `addWorkspace(name, organizationId)` | org `create_workspaces` |
-| Rename workspace, set home dashboard | `updateWorkspace(id, name, homeDashboardId)` | `basics` |
-| Invite user, remove user | `addUserToWorkspace(input)`, `removeUserFromWorkspace(userId, workspaceId)`, `deleteUserInvite(email, workspace)` | `members` |
-| Set permissions | `setWorkspaceUserPermissions(input)`, `setUserDevicePermissions(input)`, `addDevicePermissions`, `removeDevicePermissions` | `members` |
+| Create workspace | `addWorkspace(name, organizationId, brand)` | org `create_workspaces` (none when creating a new organization) |
+| Rename workspace, set home dashboard, attach white label site | `updateWorkspace(id, name, homeDashboardId, whitelabelSiteId)` | `basics` |
+| Invite user (`invited` tells invite vs instant add), remove user, cancel invite | `addUserToWorkspace(input)`, `removeUserFromWorkspace(userId, workspaceId)`, `deleteUserInvite(email, workspace)` | `members` |
+| Workspace permissions of a member or API user | `updateWorkspacePermissions(input)` (changeset; `setWorkspaceUserPermissions` is deprecated) | `members` |
+| Device permissions | `setUserDevicePermissions(input)` (per user), `addDevicePermissions` / `removeDevicePermissions` (per device) | `members` |
 | API users | `addApiUser(input)`, `updateApiUser(id, name)`, `deleteApiUser(id)` | `members` |
+| Organization admins | `createUserOrganizationRelationships`, `updateUserOrganizationRelationships`, `deleteUserOrganizationRelationships` | org `members` |
+| Transfer organization ownership | `transferOrganizationOwnership(input)` | org owner |
+| Rename organization, quota distribution | `updateOrganization(input)`, `updateOrganizationQuotaDistributionMode`, `assignWorkspaceQuota` | org `manage_workspaces` / `billing` |
+| Enterprise SSO on a white label site | `attachSsoDomain`, `detachSsoDomain`, `generateWorkosAdminPortalLink` | org `whitelabel` |
 | Rules | `createRuleNG(workspaceId, input)`, `updateRuleNG(id, input)`, `deleteRuleNG(id)` | `rules` |
 | Global dashboards | `addDashboard(input)`, `updateDashboard(input)`, `deleteDashboard(dashboard, workspace)`, `createDashboardPublicLink(input)` | `dashboards` |
 | Exports | `createManualExport(input)`, `createPeriodicExport(input)`, `updatePeriodicExport(input)`, `deleteExport(input)` | `exports` |
@@ -263,11 +268,15 @@ Downlinks whose encoder reads fields take their input from the current field val
 
 ## Workspaces, members and API users
 
+Recipes for admin tools (mass invite, moving members, organization admins, white label users, audit log) are in `reference/organizations-and-members.md`; this section has the building blocks.
+
 ```graphql
-mutation NewWorkspace($name: String!, $orgId: BlankableUUID) {
-  addWorkspace(name: $name, organizationId: $orgId) { ok workspace { id slug name } }
+mutation NewWorkspace($name: String!, $orgId: BlankableUUID, $brand: String) {
+  addWorkspace(name: $name, organizationId: $orgId, brand: $brand) { ok workspace { id slug name organization { id } } }
 }
 ```
+
+`organizationId` set: the workspace joins that organization (needs `create_workspaces` there). Empty or omitted: a new organization with separate billing, owned by the caller. `brand`: white label site id for branded welcome emails.
 
 ```graphql
 mutation Invite($input: AddUserToWorkspaceInputType!) {
@@ -275,7 +284,7 @@ mutation Invite($input: AddUserToWorkspaceInputType!) {
 }
 ```
 
-`input`: `{ workspace, email, wsPermissions: ["devices", "rules"], deviceRelationships: [{ device: "<uuid>", permissions: ["edit_basics"] }] }` (`deviceRelationships: []` for an observer; permissions are the enum values `basics`, `members`, `billing`, `devices`, `rules`, `dashboards`, `reports`, `exports`, `zones`, `gateways`, `cakered`, `whitelabel`).
+`input`: `{ workspace, email, wsPermissions: ["devices", "rules"], deviceRelationships: [{ device: "<uuid>", permissions: ["edit_basics"] }], brand: "<white label site id>" }` (`deviceRelationships: []` for an observer; permissions are the enum values `basics`, `members`, `billing`, `devices`, `rules`, `dashboards`, `reports`, `exports`, `zones`, `gateways`, `cakered`, `whitelabel`). `invited: false` means the account existed and is a member now; `invited: true` means an invitation email went out and the address sits in `workspace.invitedUsers` until the person signs up with it (no accept mutation exists). `brand` picks the white label site used for the email. One email per call; loop for bulk.
 
 ```graphql
 mutation ApiUser($input: ApiUserInput!) {
@@ -285,7 +294,17 @@ mutation ApiUser($input: ApiUserInput!) {
 
 `input`: `{ workspace, name, wsPermissions: [], deviceRelationships: [{ device, permissions: [] }] }`. The returned `apiKey` is the token; store it immediately. Update/delete: `updateApiUser(id, name)`, `deleteApiUser(id)`.
 
-Permissions: `setWorkspaceUserPermissions(input: { workspace, users: [{ user, permissions }] })`, `setUserDevicePermissions(input: { workspace, user, permissions: [{ device, permissions }] })`, `addDevicePermissions` / `removeDevicePermissions(input: { workspace, device, permissions: [{ user, permissions }] })`, `removeUserFromWorkspace(userId, workspaceId)`, `deleteUserInvite(email, workspace)`.
+Permissions:
+
+```graphql
+mutation SetPermissions($input: UpdateWorkspacePermissionsInputType!) {
+  updateWorkspacePermissions(input: $input) { ok relationship { id permissions } }
+}
+```
+
+`input`: `{ workspaceId, userId, changeset: [{ permission: rules, permitted: true }, { permission: members, permitted: false }] }` (permissions not listed are unchanged; works for API users too). Device permissions: `setUserDevicePermissions(input: { workspace, user, permissions: [{ device, permissions }] })` per user, `addDevicePermissions` / `removeDevicePermissions(input: { workspace, device, permissions: [{ user, permissions }] })` per device. Removal: `removeUserFromWorkspace(userId, workspaceId)`, `deleteUserInvite(email, workspace)`; the organization owner cannot be removed.
+
+Organization admins (organization `members` permission): `createUserOrganizationRelationships(input: { organizationId, relationships: [{ user: { email }, permissions: [members, manage_workspaces] }] })` (bulk, existing accounts only), `updateUserOrganizationRelationships(input: { organizationId, relationships: [{ id, permissions: { set | add | remove: [...] } }] })`, `deleteUserOrganizationRelationships(input: { organizationId, relationships: [{ id }] })`, `transferOrganizationOwnership(input: { organizationId, userRelationshipId })` (owner only, confirm first). Ids here are relationship ids from `organization.userRelationships`.
 
 ## Rules (Rule Engine NG)
 
@@ -435,4 +454,4 @@ Gateways (Datacake LNS): `createGateway(input: { workspaceId, name, eui, frequen
 
 ## Everything else
 
-Billing (`purchasePlan`, `subscribeToAddOnPackage`, `getStripeCustomerPortal`, …), white label, SSO, Particle, 1NCE, Dragino, TTI managed applications, MQTT server configuration, Cake Red and D Zero mutations are listed in `reference/schema-map.md` (Mutations by theme) with their input types in `reference/schema.graphql`. Ask the user before touching billing or organization-level settings.
+Billing (`purchasePlan`, `subscribeToAddOnPackage`, `getStripeCustomerPortal`, …), white label site configuration (`createWhitelabelSite`, `updateWhitelabelSite`, domain and email verification), Particle, 1NCE, Dragino, TTI managed applications, MQTT server configuration, Cake Red and D Zero mutations are listed in `reference/schema-map.md` (Mutations by theme) with their input types in `reference/schema.graphql`. Ask the user before touching billing or organization-level settings.

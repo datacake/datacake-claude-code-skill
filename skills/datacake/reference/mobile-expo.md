@@ -19,14 +19,15 @@ Only start an Expo project when the user asked for a mobile app. Web dashboards 
 2. Sign-in model: users with Datacake accounts (token per user) or a single scoped API user behind your own backend? Personal tokens must never ship inside the app binary.
 3. Offline expectations: read-only cache of last values, or queued writes?
 4. Notifications: are Datacake rule-engine pushes (Datacake app only) enough, or does this app need its own push pipeline?
-5. Screens, products, identifiers (run `discover.py`), branding.
+5. Screens, products, identifiers (run `discover.py`), branding (customer files or the Datacake default: icon, splash and colours in `branding.md`, "Expo setup"). Without a token, follow "Generic mode" in `frontend-nextjs.md` (config module, semantics and role fields, mock provider, connect steps).
+6. Admin features (members, invites, organizations) belong in a web tool (`frontend-nextjs.md`, "Admin and white label tools"); keep the mobile app to reading data and acknowledging alerts unless the user insists.
 
 ## Stack
 
 | Concern | Default |
 |---|---|
 | Framework | Expo (managed workflow), Expo Router, TypeScript |
-| UI | NativeWind (Tailwind for RN) or Tamagui; `expo-router` tabs; `@expo/vector-icons` |
+| UI | NativeWind (Tailwind for RN) or Tamagui; `expo-router` tabs; `@expo/vector-icons`; colours, fonts and app icons from `branding.md` |
 | Data | TanStack Query with `refetchInterval`; persisted cache via `@tanstack/query-async-storage-persister` for offline reads |
 | Secrets | `expo-secure-store` for the user's token; `EXPO_PUBLIC_*` only for non-secret config |
 | Charts | `react-native-gifted-charts` or `victory-native` |
@@ -133,3 +134,4 @@ export function useDevices(workspaceId: string, search?: string) {
 - [ ] Offline cache with "as of" stamps; polling paused in background
 - [ ] Push strategy decided (own pipeline vs none)
 - [ ] Identifiers per product in one module (from `discover.py`)
+- [ ] App icon, splash and colour scheme applied (`branding.md`); light and dark checked

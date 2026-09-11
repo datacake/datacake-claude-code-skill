@@ -7,11 +7,13 @@
 - Authentication architectures
 - Project structure and data layer
 - Page map
+- Admin and white label tools
 - Purpose-driven dashboards
 - Data fetching, caching, polling and realtime
 - Time zones and formatting
 - Design guidance
 - Snippets: server client, login action, proxy route, device list, KPI cards, history chart
+- Generic mode (no token yet)
 - Delivery checklist
 
 Only scaffold a Next.js app when the user asked for a web app. For a script or analysis, stay with `analytics-recipes.md`.
@@ -24,7 +26,7 @@ Collect (or confirm assumptions for) these before writing code; each changes the
 2. Sign-in model: (A) users log in with their Datacake account, (B) app serves one workspace through a single API user, (C) public dashboards only, or a mix.
 3. Workspace(s) and products: one workspace or workspace picker; which products, tags and field identifiers matter (run `discover.py`).
 4. Must-have pages and KPIs; alerts; history ranges; downlinks/set-value needed (write access)?
-5. Branding and design constraints (logo, colours, dark mode), languages, mobile usage.
+5. Branding: customer logo and colours if they have them, otherwise the Datacake default (`branding.md`: bundled assets, tokens, dark mode included); white label domains resolve branding at runtime. Languages, mobile usage.
 6. Hosting (Vercel, Docker, on-prem) and whether a backend already exists.
 
 Offer 2–3 dashboard alternatives keyed to the purpose (see table below) and let the user pick.
@@ -34,7 +36,7 @@ Offer 2–3 dashboard alternatives keyed to the purpose (see table below) and le
 | Concern | Default | Escape hatch |
 |---|---|---|
 | Framework | Next.js (App Router, TypeScript, server components + server actions) | Remix/SvelteKit if the user prefers; same auth rules apply |
-| Styling/UI | Tailwind CSS + shadcn/ui (`card`, `table`, `badge`, `tabs`, `sheet`, `dialog`, `command`, `skeleton`, `sonner`) | any component library |
+| Styling/UI | Tailwind CSS v4 + shadcn/ui new-york (`sidebar`, `card`, `table`, `badge`, `tabs`, `sheet`, `dialog`, `command`, `skeleton`, `sonner`), tokens and fonts from `branding.md`, `next-themes` for dark mode | any component library |
 | Data fetching | server components for initial data, TanStack Query in client components for polling/pagination | SWR |
 | GraphQL client | plain `fetch` wrapper (below) or `graphql-request`; optional `@graphql-codegen/cli` + `client-preset` against `reference/schema.graphql` for types | Apollo/urql if subscriptions-like caching is wanted (there are no subscriptions) |
 | Validation | `zod` for env vars and form input | |
@@ -56,6 +58,8 @@ Offer 2–3 dashboard alternatives keyed to the purpose (see table below) and le
 
 **C. Public dashboards** (no backend secrets at all)
 - Use `publicDevice(id:, token:)` and `dashboardPublicLink(publicLink: { id, token })` with the public link token, which is safe to embed; limited to semantics, role fields and dashboard data.
+
+Admin and white label tools use model A only: organization administration (`organizations`, `organization.userRelationships`, invites across workspaces) needs a real user token; API users are workspace-scoped and have no organization rights. Gate navigation like the portal: organization section when `organization.permissions` contains `billing`, `members`, `manage_workspaces` or `whitelabel`; members pages when `workspace.myPermissions` contains `members`; white label pages when `user.whitelabelSites` is non-empty.
 
 MUST NOT: call `api.datacake.co` from the browser with a personal or API user token. MUST: keep tokens in env vars/secret stores; validate env with zod at boot.
 
@@ -95,6 +99,25 @@ Data layer rules: one module owns the GraphQL documents; components receive type
 | Alerts | `devicesFiltered` with thresholds; optionally `rulesNG` + `executionLogEntries` | counts first, paginated lists |
 | Settings | workspace switch, time zone, units, refresh interval | store in cookie/localStorage |
 
+## Admin and white label tools
+
+For "a portal where our admins (or a customer's admin) manage organizations, workspaces and members". Queries and mutations by name are in `organizations-and-members.md`; read it before building. Sign-in model A; the operator's own permissions decide what is visible.
+
+| Page | Data | Notes |
+|---|---|---|
+| Organizations | `MyOrganizations` (`organizations(permissionFilter:)` with `permissions`, `owner`, counts, quotas) | entry point; one card per organization; hide organizations without admin permissions |
+| Organization admins | `OrganizationAdmins` (search, sort, `first`/`offset`) | add via `createUserOrganizationRelationships` (existing accounts only), edit with `updateUserOrganizationRelationships`, transfer ownership behind a confirmation |
+| Workspaces | `OrganizationWorkspaces` (`memberCount`, `deviceCount`, `myPermissions`, `whitelabelSite`) | mark workspaces the operator cannot read (`myPermissions` lacks `members`); create with `addWorkspace(organizationId, brand)` |
+| Members | `WorkspaceMembers` (members, invites, API users with device relationships) | tabs Members / Invites / API users; permission chips; `isOrganizationOwner` badge; never render `apiKey` |
+| Member detail | `MemberDetail` + `DeviceAccess` | workspace permission toggles → `updateWorkspacePermissions` changeset; device grid → `setUserDevicePermissions` |
+| Invite wizard | emails textarea, permission preset, device picker (`devicesFiltered` by tag), branding (`workspace.whitelabelSite` or `user.whitelabelSites`) | loop `addUserToWorkspace` per email (≤5 in flight), show "added" vs "invitation sent" per address |
+| Move member | source `MemberDetail`, target workspace picker | add to target with mapped device relationships → verify → remove from source; explain the no-move-mutation caveat in the UI |
+| White label users | `WhitelabelUsers` (search, `LAST_VISIT_DESC`) | entitlement-gated; link a user to their memberships via `OrganizationMemberDirectory` matched on email |
+| Audit log | `WhitelabelAuditLog` (filter by `action`, user email) | paginated table, action badges, `details` expandable |
+| SSO | `WhitelabelSso`, `attachSsoDomain`, `generateWorkosAdminPortalLink` | show DNS TXT record until `verified`; the portal link is single-use |
+
+Rules: every write goes through a server action that re-checks `ok` and surfaces `extensions.code`; bulk actions render a per-row result list; removals and ownership transfer need a typed confirmation; `org-list` style directory pages deduplicate users by `user.id` and list their workspaces.
+
 ## Purpose-driven dashboards
 
 | Purpose | KPI cards | Widgets | Queries |
@@ -126,9 +149,11 @@ Present the two or three most relevant rows as alternatives; build the chosen on
 
 ## Design guidance
 
+Brand, tokens, fonts, the app shell and the login layout are defined in `branding.md` (Datacake default, customer swap, runtime white label). The rules below apply under any brand.
+
 - Modern, calm dashboard look: shadcn `Card` grid for KPIs (value, unit, delta vs previous period, sparkline), dense `Table` for lists with status `Badge`, sticky filters, command palette (`Command`) for device search.
 - Every data view has loading (`Skeleton`), empty ("No devices match"), error and stale states.
-- Colour by state, not decoration: green online, amber warning, red critical, muted offline; respect dark mode with CSS variables.
+- Colour by state, not decoration: `--success` online, `--warning` stale/warning, `--destructive` critical, `--muted-foreground` offline (values in `branding.md`); never the brand colour for status. Dark mode is standard: class strategy, system default, toggle in the user menu.
 - Responsive: KPI grid 1/2/4 columns, tables collapse to cards on small screens, charts full width.
 - Accessibility: semantic headings, labelled controls, focus states, sufficient contrast, numbers formatted per locale.
 - Keep the first version to the requested pages; add rules/downlinks/admin features only when asked.
@@ -262,14 +287,26 @@ export function toDeltas(rows: HistoryRow[], field: string) {
 
 Optional client proxy (`app/api/graphql/route.ts`) for TanStack Query in client components: accept `{ op: "deviceList", variables }`, look up the document in an allow-list on the server, run it with the cookie token, return `data`. Never forward arbitrary query strings from the browser.
 
+## Generic mode (no token yet)
+
+When the user cannot provide a token up front, build so that connecting later is a configuration change, not a rewrite:
+
+- One config module, `lib/datacake/config.ts`: `WORKSPACE_ID`, refresh intervals, and an `identifiers` map per product with `TODO` placeholders derived from the archetype (cold chain: temperature + door; energy: meter reading + power; …). Everything else imports from it.
+- Prefer product-agnostic reads: device lists and KPI cards via semantics (`numericSemanticField`, `aggregatedNumericSemanticValue`, boolean semantics) and `roleFields`; they work on any workspace without knowing identifiers.
+- Resolve identifiers once per product at runtime for the few places that need them (history charts, `change()` windows): `products { id name measurementFields(active: true) { fieldName semantic role unit } }`, cached per product for the process lifetime, picking the field whose `semantic` (or `role`) matches; fall back to the config placeholders.
+- Mock data provider behind the same interface as the server client (`DATACAKE_MOCK=1`): a few devices with realistic semantics and a synthetic history series, so pages, charts and empty states can be developed and demoed.
+- Ship a `CONNECT.md` with the three steps: create a read-only API user (Members > API Users, view-only devices), set `DATACAKE_TOKEN`, run `python3 scripts/discover.py <workspace>` and paste the identifiers into `config.ts`. Then run the app against the workspace and remove the mock flag.
+- Do not guess identifiers silently. Placeholders must be visibly marked, and the UI must show "–" for unresolved fields.
+
 ## Delivery checklist
 
-- [ ] Purpose, sign-in model, workspace and identifiers confirmed with the user
+- [ ] Archetype and connect-vs-generic decided; purpose, sign-in model, workspace and identifiers confirmed with the user (or placeholders visibly marked in generic mode)
 - [ ] `.env.example` with `DATACAKE_TOKEN` (model B) and zod validation; `.env` ignored
 - [ ] Tokens only server-side; cookie httpOnly; logout clears it
 - [ ] Lists paginated (`pageSize` ≤ 50), KPIs via aggregates, history per device with sane resolution
 - [ ] Loading/empty/error/stale states on every data view; "last updated" stamps
 - [ ] Time zone handled explicitly; units from field definitions; `null` rendered as "–"
 - [ ] Polling intervals ≥ 30 s; history cached per range
-- [ ] Lighthouse-level basics: responsive, accessible, dark mode if requested
+- [ ] Lighthouse-level basics: responsive, accessible, both themes checked
+- [ ] Branding applied per `branding.md` (assets copied, tokens in `globals.css`, `brand` module, logo swaps with theme); assumption stated if Datacake default was used
 - [ ] README with setup, env vars and how identifiers were chosen (`discover.py` output)

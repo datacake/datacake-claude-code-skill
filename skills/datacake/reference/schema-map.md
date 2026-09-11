@@ -80,7 +80,11 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 
 ## Key object types (curated)
 
-**UserType**: `id`, `email`, `firstName`, `lastName`, `fullName`, `language`, `phoneNumber`, `isApiuser`, `apiKey` (own token), `primaryWorkspace`, `workspaceRelationship(workspace)`, `deviceRelationships(workspace)`, `allDevices` (id + name only), `otpTotpDevices`, `features`, `whitelabelSites`.
+**UserType**: `id`, `email`, `firstName`, `lastName`, `fullName`, `language`, `phoneNumber`, `isApiuser`, `apiKey` (own token), `primaryWorkspace`, `workspaceRelationship(workspace)`, `deviceRelationships(workspace)`, `allDevices` (id + name only), `otpTotpDevices`, `features`, `whitelabelSites` (sites the user administers).
+
+**UserWorkspaceRelationshipType** (workspace member): `id`, `user`, `workspace`, `permissions: [WorkspacePermissions]`, `allDevicesPermissionExists`, `allDevicePermissions`, `isOrganizationOwner`, `deviceRelationships { id permissions emailOffline device }`. **ApiUserWorkspaceRelationshipType**: same shape with `user: ApiUserType { id name apiKey created }`. **UserWorkspaceInviteType**: `id`, `email`, `workspace`, `permissions`, `deviceInvites { id device permissions }`.
+
+**UserOrganizationRelationshipType** (organization admin): `id` (relationship id, Relay), `user`, `permissions: [UserOrganizationPermissions]`; served as a connection with `filter: { user: { firstName | lastName | email: { exact | contains | icontains } }, and, or, not }` and `orderBy: OrganizationUserRelationshipsOrder`.
 
 **WorkspaceType**
 - Identity: `id`, `name`, `slug`, `logo`, `organization`, `whitelabelSite`, `features`, `myPermissions`, `entitlement*` (device/rules/webhooks/exports quotas), `deletePreventCause`.
@@ -113,7 +117,11 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 
 **DeviceNumericSemanticFieldValue** / **DeviceBooleanSemanticFieldValue**: `value`, `fields { fieldName verboseFieldName value unit fieldType }`; boolean adds `count(countValue!)`.
 
-**OrganizationType**: `id`, `name`, `billingPlan`, `billingPlanInterval`, `entitlement*`, `totalDevices`, `devicePlanCounts`, `workspaces(...)` (connection), `owner`, `userRelationships(...)`, `permissions`, `smsQuota*`, `deviceQuotaDistributionMode`, `activeAddOnPackages`, `whitelabelSites(...)`.
+**OrganizationType**: `id`, `name`, `billingPlan`, `billingPlanInterval`, `entitlement*` (device, workspaces, webhooks, white label site quotas; `entitlementWhitelabelShowUsersAndLogs`, `entitlementEnterpriseSsoEnabled`), `totalDevices`, `devicePlanCounts`, `workspaces(first, after, offset, filter: { name }, orderBy: NAME_ASC|…)` (connection, every workspace of the organization), `owner`, `userRelationships(first, offset, filter, orderBy)` (admins), `permissions` (the caller's own), `subscriptionUnpaid`, `smsQuota*`, `deviceQuotaDistributionMode`, `activeAddOnPackages`, `whitelabelSites(...)`. Root: `organization(id)`, `organizations(permissionFilter, filter: { name }, orderBy, first, after)`.
+
+**WhitelabelSiteType** (admin subset): `id`, `title`, `brand`, `domain`, `apiUrl`, `mqttServer`, `logo`, `favicon`, `organization`, `allowSignup`, `allowPasswordLogin`, `passwordLoginEnabled`, `restrictLoginToWhitelabelSite`, `autoAssignSignupsToOrganization`, `allowAddWorkspace`, `ssoEnabled`, `ssoDomains { domain verified ssoVerificationRecordName ssoVerificationRecordValue }`, `users(first, offset, filter: { email | firstName | lastName: { exact | contains } }, orderBy: WhitelabelUserOrder)`, `auditLogEntries(first, offset, filter: { action: { exact }, user: { id | email | firstName | lastName }, details, targetContentType, targetObjectId }, orderBy: WhitelabelAuditLogEntryOrder)`, `availableDeviceTypes`, `integrations`, `isCancelled`, `subscription`, plus the hide/disable flags and email/domain verification fields. Roots: `whitelabelSite(id)`, `branding`, `brandingForDomain(domain)`.
+
+**WhitelabelUserType**: `id` (Relay, not a `UserType.id`), `firstName`, `lastName`, `email`, `dateJoined`, `lastVisit`. **AuditLogEntryType**: `id`, `created`, `user`, `action: AuditLogEntryAction`, `details`, `targetContentType`, `targetObjectId`. **SsoDomainType**: `domain`, `verified`, `ssoVerificationRecordName`, `ssoVerificationRecordValue`.
 
 **DashboardType**: `id`, `name`, `type`, `icon`, `dashboards` (JSON), `metaJSON`, `sharingPolicy`, `sharedWith`, `publicLinks`, `dashboardData(...)`, `deviceInformation(...)`, `workspace` (public subset), colours/background, `dashboardChangelog`.
 
@@ -151,6 +159,11 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 - **ExportFieldSelection**: `SEMANTICS`, `FIELD_NAMES`, `ALL`
 - **ExportPeriodicInterval**: `DAILY`, `WEEKLY`, `MONTHLY`
 - **WorkspaceFeatures**: `RULE_ENGINE`, `ZONES`, `WHITELABEL_USERS`, `MANAGED_HELIUM`, `LIVE_CHAT`
+- **AuditLogEntryAction**: `LOGIN`, `PASSWORD_RESET`, `PASSWORD_CHANGE`, `USER_INVITE`, `USER_REMOVE`, `CONFIG_CHANGE`, `DEVICE_DELETED`, `DEVICE_CONFIG_CHANGED`, `DEVICE_REMOVED`, `PRODUCT_DELETED`, `USER_WORKSPACE_PERMISSIONS`, `USER_DEVICE_PERMISSIONS`, `DOWNLINK_SEND`, `SUBSCRIPTION_CANCELLED`, `DEVICE_DATA_DELETED`, `ORGANIZATION_MEMBER_ADD`, `ORGANIZATION_MEMBER_REMOVE`, `ORGANIZATION_MEMBER_PERMISSIONS`, `ORGANIZATION_TRANSFER_OWNERSHIP`
+- **OrganizationUserRelationshipsOrder**: `USER_FIRST_NAME_ASC`, `USER_FIRST_NAME_DESC`, `USER_LAST_NAME_ASC`, `USER_LAST_NAME_DESC`, `USER_EMAIL_ASC`, `USER_EMAIL_DESC`
+- **OrganizationWorkspacesOrder**: `NAME_ASC`, `NAME_DESC`, `SMS_QUOTA_ASC`, `SMS_QUOTA_DESC`
+- **WhitelabelUserOrder**: `ID_ASC`, `ID_DESC`, `FIRST_NAME_ASC`, `FIRST_NAME_DESC`, `LAST_NAME_ASC`, `LAST_NAME_DESC`, `EMAIL_ASC`, `EMAIL_DESC`, `LAST_VISIT_ASC`, `LAST_VISIT_DESC`, `DATE_JOINED_ASC`, `DATE_JOINED_DESC`
+- **WhitelabelAuditLogEntryOrder**: `ID_ASC`, `ID_DESC`, `ACTION_ASC`, `ACTION_DESC`, `CREATED_ASC`, `CREATED_DESC`, `USER_ID_ASC`, `USER_ID_DESC`, `USER_FIRST_NAME_ASC`, `USER_FIRST_NAME_DESC`, `USER_LAST_NAME_ASC`, `USER_LAST_NAME_DESC`
 <!-- generated:end:enums -->
 
 ## Mutations by theme (generated)
@@ -478,7 +491,10 @@ Grep these in `schema.graphql` before building a mutation:
 | Create devices | `CreateLoraDevicesInputType` + `CreateLoraDevicesDevice`, `CreateApiDevicesInputType` + `CreateApiDevicesDevice`, `AddPincodeDeviceInputType` |
 | Edit devices | `UpdateDeviceInputType`, `RemoveDeviceInput`, `DeleteDeviceDataInput`, `CreateDeviceMoveRequestInputType`, `AcceptDeviceMoveRequestInputType`, `DevicePublicLinkInputType` |
 | Products and fields | `UpdateProductInputType`, `CloneProductInputType`, `DeleteProductInputType`, `CreateConfigurationFieldInputType`, `SetDeviceConfigurationValueInputType`, `AddFieldMappingInputType`, `TryPayloadDecoderInputType`, `TryFormulaInputType` |
-| Members | `AddUserToWorkspaceInputType`, `ApiUserInput`, `DeviceRelationshipInputType`, `SetWorkspaceUserPermissionsInputType`, `SetUserDevicePermissionsInputType`, `AddDevicePermissionsInputType` |
+| Members | `AddUserToWorkspaceInputType` (`workspace`, `email`, `wsPermissions`, `deviceRelationships`, `brand`), `ApiUserInput`, `DeviceRelationshipInputType`, `UpdateWorkspacePermissionsInputType` + `UpdateWorkspacePermissionsChangesetInputType`, `SetUserDevicePermissionsInputType` + `UserDevicePermissionsInputType`, `AddDevicePermissionsInputType` / `RemoveDevicePermissionsInputType` + `UserDevicePermissionsInput` |
+| Organization admins | `CreateUserOrganizationRelationshipsInputType` + `CreateUserOrganizationRelationshipInputType` (`user: { id | email }`, `permissions`), `UpdateUserOrganizationRelationshipsInputType` + `UpdateUserOrganizationRelationshipPermissionsInputType` (`set`, `add`, `remove`), `DeleteUserOrganizationRelationshipsInputType`, `TransferOrganizationOwnershipInputType`, `UpdateOrganizationInputType` |
+| Organization and white label filters | `OrganizationFilterInputType`, `OrganizationWorkspacesFilterInputType`, `OrganizationUserRelationshipsFilterInputType`, `WhitelabelUserFilterInputType`, `WhitelabelAuditLogEntryFilterInputType` |
+| White label SSO | `AttachSsoDomainInputType`, `DetachSsoDomainInputType`, `GenerateWorkosAdminPortalLinkInputType`, `UpdateWhitelabelSiteInputType` |
 | Rules | `CreateRuleNGInputType`, `UpdateRuleNGInputType`, `RuleNGConditionInputType`, `RuleNGLeftOperandInputType`, `RuleNGRightOperandInputType`, `RuleNGTimerangeOperationInputType`, `CreateRuleNGActionInputType`, `UpdateRuleNGActionInputType`, `NormalizedTimeRestrictionsInputType` |
 | Dashboards | `AddDashboardInputType`, `UpdateDashboardInputType`, `CreateDashboardPublicLinkInputType`, `DashboardPublicLinkAuthInputType`, `PublicDeviceAuthType` |
 | Exports and reports | `CreateManualExportInputType`, `CreatePeriodicExportInputType`, `UpdatePeriodicExportInputType`, `CreateReportInputType`, `CreateReportBuilderReportInputType` |
