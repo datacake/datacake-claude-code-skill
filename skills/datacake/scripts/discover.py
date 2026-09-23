@@ -6,7 +6,7 @@ Usage:
   python3 scripts/discover.py                         # list the workspaces the token can access
   python3 scripts/discover.py <workspace-id|slug>     # map one workspace
   python3 scripts/discover.py <workspace> --devices 20 --inactive --product "Sensor"
-  python3 scripts/discover.py <workspace> --json      # machine-readable output
+  python3 scripts/discover.py <workspace> --json      # machine-readable output (includes field, downlink and device ids)
   python3 scripts/discover.py --orgs                  # organizations the token administers, with their workspaces
 
 Token: $DATACAKE_TOKEN or ~/.datacake/token (or --token). Standard library only.
@@ -57,8 +57,10 @@ query Discover($id: String, $slug: String, $pageSize: Int) {
     organization { id name }
     products {
       id name slug hardware deviceCount lastHeardThreshold
-      measurementFields { fieldName verboseFieldName fieldType unit role semantic active useFormula }
-      configurationFields { fieldName verboseFieldName fieldType unit }
+      measurementFields { id fieldName verboseFieldName fieldType unit role semantic active useFormula }
+      configurationFields { id fieldName verboseFieldName fieldType unit }
+      lorawanDownlinks { id name fport }
+      apiConfiguration { apiDownlinks { id name } mqttDownlinks { id name } }
     }
     devicesFiltered(page: 0, pageSize: $pageSize) {
       total
@@ -217,16 +219,23 @@ def main():
         fields = p["measurementFields"] or []
         if fields:
             print(table([[f["fieldName"], f["verboseFieldName"], f["fieldType"], f["unit"], f["role"] or "",
-                          f["semantic"] or "", "yes" if f["useFormula"] else "", "" if f["active"] else "INACTIVE"]
+                          f["semantic"] or "", "yes" if f["useFormula"] else "", "" if f["active"] else "INACTIVE", f["id"]]
                          for f in fields],
                         ["fieldName (identifier)", "verboseFieldName", "type", "unit", "role", "semantic",
-                         "formula", "state"]))
+                         "formula", "state", "field id (rules)"]))
         else:
             print("  (no fields)")
         cfg = p["configurationFields"] or []
         if cfg:
             print("  configuration fields: " + ", ".join(
-                "%s (%s%s)" % (c["fieldName"], c["fieldType"], ", " + c["unit"] if c["unit"] else "") for c in cfg))
+                "%s (%s%s, id %s)" % (c["fieldName"], c["fieldType"], ", " + c["unit"] if c["unit"] else "", c["id"]) for c in cfg))
+        api_cfg = p.get("apiConfiguration") or {}
+        downlinks = [("lorawan", d) for d in p.get("lorawanDownlinks") or []]
+        downlinks += [("api", d) for d in api_cfg.get("apiDownlinks") or []] + [("mqtt", d) for d in api_cfg.get("mqttDownlinks") or []]
+        if downlinks:
+            print("  downlinks: " + ", ".join(
+                "%s (%s%s, id %s)" % (d["name"], kind, ", fport %s" % d["fport"] if d.get("fport") is not None else "", d["id"])
+                for kind, d in downlinks))
 
     dl = ws["devicesFiltered"] or {}
     devices = dl.get("devices") or []
@@ -236,7 +245,8 @@ def main():
                       (d["lastHeard"] or "")[:19], (d["product"] or {}).get("name"), ",".join(d["tags"] or [])]
                      for d in devices],
                     ["id", "verboseName", "serialNumber", "status", "lastHeard", "product", "tags"]))
-    print("\nUse fieldName identifiers (left column) in currentMeasurements(fieldNames: [...]) and history(fields: [...]).")
+    print("\nUse fieldName identifiers (left column) in currentMeasurements(fieldNames: [...]), history(fields: [...]) and rule templates;")
+    print("use the field/device/downlink ids in rule inputs (reference/rules-ng.md, scripts/rules.py ids).")
 
 
 if __name__ == "__main__":

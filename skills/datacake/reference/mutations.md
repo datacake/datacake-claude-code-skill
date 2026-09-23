@@ -308,6 +308,8 @@ Organization admins (organization `members` permission): `createUserOrganization
 
 ## Rules (Rule Engine NG)
 
+Full reference (list and detail queries, id resolution, execution modes, conditions, actions, template variables, logs, recipes): `rules-ng.md`. Helper: `scripts/rules.py` (`ids`, `list`, `get`, `export`, `create`, `update`, `enable`, `disable`, `delete`, `logs`; writes are dry runs without `--execute`).
+
 ```graphql
 mutation CreateRule($workspaceId: UUID!, $input: CreateRuleNGInputType!) {
   createRuleNG(workspaceId: $workspaceId, input: $input) {
@@ -318,62 +320,14 @@ mutation CreateRule($workspaceId: UUID!, $input: CreateRuleNGInputType!) {
 }
 ```
 
-Example `input` (email + webhook when CO₂ exceeds 1000 ppm on all devices of one product):
-
-```json
-{
-  "name": "High CO2",
-  "description": "Notify facility team",
-  "timezone": "Europe/Berlin",
-  "enabled": true,
-  "executionMode": "DEVICE_LEVEL",
-  "productFilterId": "<product uuid>",
-  "triggerOnMeasurement": true,
-  "triggeringMeasurementFields": ["<CO2 field uuid>"],
-  "conditions": [
-    {
-      "id": "<client-generated uuid>",
-      "description": "",
-      "conjunction": "AND",
-      "kind": "GREATER_THAN",
-      "leftOperand": { "kind": "TRIGGERING_DEVICE_FIELD_VALUE", "fieldId": "<CO2 field uuid>" },
-      "rightOperand": { "kind": "STATIC_NUMBER_VALUE", "numberValue": 1000, "hysteresis": 50 }
-    }
-  ],
-  "createActions": [
-    {
-      "kind": "EMAIL",
-      "description": "Mail",
-      "emailReceivers": ["facility@example.com"],
-      "emailSubject": "CO2 high in {{ triggering_device[\"name\"] }}",
-      "emailBody": "CO2 is {{ triggering_device[\"values\"][\"CO2\"] }} ppm",
-      "fireWhenConditionsBecomeHot": true,
-      "fireWhenConditionsStayHot": false,
-      "fireWhenConditionsBecomeCold": true,
-      "minSecondsBetweenHotConditions": 3600,
-      "maxConsecutiveActionExecutions": 0
-    },
-    {
-      "kind": "WEBHOOK",
-      "description": "Ticket",
-      "webhookUrl": "https://example.com/hooks/datacake",
-      "webhookHeaders": [{ "key": "Authorization", "value": "Bearer …" }],
-      "webhookPayload": "{\"device\": \"{{ triggering_device[\"id\"] }}\", \"co2\": {{ triggering_device[\"values\"][\"CO2\"] }} }",
-      "fireWhenConditionsBecomeHot": true,
-      "fireWhenConditionsStayHot": false,
-      "fireWhenConditionsBecomeCold": false
-    }
-  ]
-}
-```
-
-Building blocks:
-- Scope: `productFilterId` (required for measurement triggers) plus either nothing (all devices), `devicesFilterIds`, or `tagsFilter` + `tagsFilterConjunction` (copy the values an existing rule reports in `rulesNG { tagsFilterConjunction }`).
-- Triggers: `triggerOnMeasurement` (+ `triggeringMeasurementFields`), `triggerOnDeviceGoesOffline`, `triggerOnDeviceGoesOnline`, `triggerOnGatewayGoesOffline/Online`, `triggerOnSchedule` + `scheduleTriggerCrontab` (5-field cron in `timezone`), `triggerOnZoneEntry/Exit/LengthOfStay` + `zoneTagsFilter`, `zoneLengthOfStayTriggerMinutes`.
-- Condition operands: left `{ kind: TRIGGERING_DEVICE_FIELD_VALUE | STATIC_DEVICE_FIELD_VALUE, fieldId, deviceId?, timerangeOperation?: { kind: AVERAGE|MIN|MAX|SUM|COUNT|ABSOLUTE_CHANGE|RELATIVE_CHANGE, start: "1 hour ago", end: "now" } }`; right `{ kind: STATIC_NUMBER_VALUE | STATIC_RANGE_VALUE | STATIC_BOOLEAN_VALUE | STATIC_STRING_VALUE | DYNAMIC_TRIGGERING_DEVICE_FIELD_VALUE | DYNAMIC_DEVICE_FIELD_VALUE | DYNAMIC_CONFIGURATION_FIELD_VALUE, numberValue | rangeValue: { start, end, includeBoundaries } | booleanValue | stringValue | fieldId (+ deviceId), hysteresis }`; `kind` operations: `EQUALS`, `NOT_EQUALS`, `CONTAINS`, `NOT_CONTAINS`, `LESS_THAN`, `LESS_THAN_OR_EQUAL`, `GREATER_THAN`, `GREATER_THAN_OR_EQUAL`, `INSIDE_RANGE`, `OUTSIDE_RANGE`.
-- Actions (`CreateRuleNGActionInputType`): `kind` `EMAIL` (`emailReceivers`, `emailSubject`, `emailBody`), `SMS` (`smsReceivers`, `smsBody`), `WEBHOOK` (`webhookUrl`, `webhookHeaders`, `webhookPayload`), `PUSH` (`pushTitle`, `pushBody`, `pushRecipientIds` from `workspace.pushRecipientCandidates`), `SINGLE_DEVICE_DOWNLINK` (`singleDeviceDownlinkId`, optional `singleDeviceDownlinkDeviceId`), `MULTI_DEVICE_DOWNLINK` (`multiDeviceDownlinkProductId`, `multiDeviceDownlinkId`, `multiDeviceDownlinkTagsFilter`), `SET_VALUE` (`setValueFieldId`, optional `setValueDeviceId`, one of `setValueNumeric`/`setValueBool`/`setValueString`/`setValueGeo`); firing flags `fireWhenConditionsBecomeHot/StayHot/BecomeCold`, `minSecondsBetweenHotConditions`, `maxConsecutiveActionExecutions` (0 = unlimited), `timeRestrictions`.
-- Update: `updateRuleNG(id, input)` with the same fields plus `updateActions` (each with `id`) and `deleteActions: [id]`; toggling: `updateRuleNG(id: $id, input: { enabled: false })`. Delete: `deleteRuleNG(id)`.
-- Inspect: `ruleNG(id) { … executionLogEntries(first: 20) { edges { node { triggerTimestamp conditionsResult anyActionFired triggeringDevice { verboseName } conditionsPrettyEvaluationTrace } } } }`.
+`input` (`CreateRuleNGInputType`), everything but `name` optional:
+- Scope: `productFilterId` (required for device-level triggers) plus either nothing (all devices), `devicesFilterIds`, or `tagsFilter` + `tagsFilterConjunction` (`"AND"` or `"OR"`); `executionMode` `DEVICE_LEVEL` (per device, the default), `GATEWAY_LEVEL`, `SYSTEM_LEVEL` (once); `timezone`; `whitelabelSiteId` for branded emails/push.
+- Triggers: `triggerOnMeasurement` (+ `triggeringMeasurementFields`, field UUIDs), `triggerOnDeviceGoesOffline`, `triggerOnDeviceGoesOnline`, `triggerOnGatewayGoesOffline/Online`, `triggerOnSchedule` + `scheduleTriggerCrontab` (5-field cron in `timezone`), `triggerOnZoneEntry/Exit/LengthOfStay` + `zoneTagsFilter`, `zoneLengthOfStayTriggerMinutes`.
+- Conditions (`RuleNGConditionInputType`): `{ id: <client uuid v4>, description, conjunction: AND|OR, kind, leftOperand: { kind: TRIGGERING_DEVICE_FIELD_VALUE | STATIC_DEVICE_FIELD_VALUE, fieldId, deviceId?, timerangeOperation?: { kind: AVERAGE|MIN|MAX|SUM|COUNT|ABSOLUTE_CHANGE|RELATIVE_CHANGE, start: "1 hour ago", end: "now" } }, rightOperand: { kind: STATIC_NUMBER_VALUE | STATIC_RANGE_VALUE | STATIC_BOOLEAN_VALUE | STATIC_STRING_VALUE | DYNAMIC_TRIGGERING_DEVICE_FIELD_VALUE | DYNAMIC_DEVICE_FIELD_VALUE | DYNAMIC_CONFIGURATION_FIELD_VALUE, numberValue | rangeValue: { start, end, includeBoundaries } | booleanValue | stringValue | fieldId (+ deviceId), hysteresis: 0 } }`; `kind`: `EQUALS`, `NOT_EQUALS`, `CONTAINS`, `NOT_CONTAINS`, `LESS_THAN`, `LESS_THAN_OR_EQUAL`, `GREATER_THAN`, `GREATER_THAN_OR_EQUAL`, `INSIDE_RANGE`, `OUTSIDE_RANGE`.
+- Actions (`CreateRuleNGActionInputType`): `kind` `EMAIL` (`emailReceivers`, `emailSubject`, `emailBody`), `SMS` (`smsReceivers`, `smsBody`), `WEBHOOK` (`webhookUrl`, `webhookHeaders`, `webhookPayload`), `PUSH` (`pushTitle`, `pushBody`, `pushRecipientIds` from `workspace.pushRecipientCandidates`), `SINGLE_DEVICE_DOWNLINK` (`singleDeviceDownlinkId`, optional `singleDeviceDownlinkDeviceId`), `MULTI_DEVICE_DOWNLINK` (`multiDeviceDownlinkProductId`, `multiDeviceDownlinkId`, `multiDeviceDownlinkTagsFilter`, `multiDeviceDownlinkTagsFilterConjunction`), `SET_VALUE` (`setValueFieldId`, optional `setValueDeviceId`, one of `setValueNumeric`/`setValueBool`/`setValueString`/`setValueGeo`); firing flags `fireWhenConditionsBecomeHot/StayHot/BecomeCold` (all three required), `minSecondsBetweenHotConditions`, `maxConsecutiveActionExecutions` (0 = unlimited), `timeRestrictions`.
+- Templates: `{{ triggering_device['name'] }}`, `{{ triggering_device['measurements']['CO2'] }}`, `{{ triggering_device['timestamps']['CO2'] | datetime }}`, `{{ rule['name'] }}` (Django Template Language; variable catalogue in `rules-ng.md`).
+- Update: `updateRuleNG(id, input: UpdateRuleNGInputType)` with only the fields to change; `devicesFilterIds` and `triggeringMeasurementFields` become `{ set | add | remove: [...] }` objects, `conditions` replaces the whole list, actions go through `createActions`, `updateActions` (each with `id`) and `deleteActions: [id]`. Toggle: `updateRuleNG(id: $id, input: { enabled: false })`. Delete: `deleteRuleNG(id)` (no undo, confirm first).
+- Inspect: `ruleNG(id) { … executionLogEntries(first: 20, filter: { anyActionFired: { exact: true } }) { edges { node { triggerTimestamp initiator conditionsResult anyActionFired triggeringDevice { verboseName } conditionsPrettyEvaluationTrace } } } }`.
 - Legacy: `createRule(workspace, input: CloudRuleInputType)`, `updateRule`, `deleteRule(rule, workspace)`; avoid for new work.
 
 ## Dashboards and views

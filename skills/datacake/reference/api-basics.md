@@ -167,7 +167,7 @@ Mutation payload conventions differ by age of the mutation: older ones return `{
 |---|---|---|
 | `workspace.devicesFiltered`, `workspace.devices` | offset pages | `page` (0-based) and `pageSize`; `total` gives the full count; omit `devices` when you only need `total` |
 | `allDevices` | none | returns every matching device; only for small filtered sets |
-| `organizations`, `organization.workspaces`, `workspace.zones`, `devicesInZones`, `deviceZoneEvents`, `gateways`, `exports`, `exportRuns`, `reportBuilderReports`, `*MoveRequests`, `rule.executionLogEntries`, `dashboardChangelog` | Relay connections | `first`/`after` (or `offset`), read `edges { node { … } }`, `pageInfo { hasNextPage endCursor }`, `totalCount`; `filter`/`orderBy` inputs are per connection (grep the `*FilterInputType` in the schema) |
+| `organizations`, `organization.workspaces`, `workspace.zones`, `devicesInZones`, `deviceZoneEvents`, `gateways`, `exports`, `exportRuns`, `reportBuilderReports`, `*MoveRequests`, `ruleNG.executionLogEntries`, `dashboardChangelog` | Relay connections | `first`/`after` (or `offset`), read `edges { node { … } }`, `pageInfo { hasNextPage endCursor }`, `totalCount`; `filter`/`orderBy` inputs are per connection (grep the `*FilterInputType` in the schema) |
 | `products`, `rulesNG`, `dashboards`, `reports`, `webhooks`, `allWorkspaces` | plain lists | no pagination; usually small |
 
 Relay example:
@@ -206,7 +206,7 @@ query Zones($workspaceId: String!, $after: String) {
 - Convert local boundaries to UTC in your code (`date-fns-tz`, `luxon`, Python `zoneinfo`) or let the API do it: `query { parseDate(date: "2026-03-11 00:00", timezone: "Europe/Berlin") }` returns the UTC `DateTime`.
 - `history(timerangestart:, timerangeend:)` arguments are `String`s in ISO format (offsets honoured); `change`/`sum`/`average`/`minimum`/`maximum` take `DateTime!`. An end in the future is accepted.
 - Device timestamps: `lastHeard`, `DeviceCurrentMeasurementType.modified` (time of the latest value), `DeviceRoleFieldValue.datetime`.
-- Rules have their own `timezone`; the workspace has none.
+- Rules have their own `timezone` (schedule trigger and the `datetime` template filter); the workspace has none.
 
 ## Limits and performance
 
@@ -220,7 +220,7 @@ query Zones($workspaceId: String!, $after: String) {
 
 - `reference/schema.graphql` (SDL, ~230 KB) is the full contract. Grep it rather than reading it whole:
   - `grep -n "^type WorkspaceType" -A 130 reference/schema.graphql`
-  - `grep -n "^input CreateRuleNGInputType" -A 40 reference/schema.graphql`
+  - `grep -n "^input CreateRuleNGInputType" -A 40 reference/schema.graphql` (usage: `reference/rules-ng.md`)
   - `grep -n "^enum FieldSemantic" -A 45 reference/schema.graphql`
   - `grep -n "  devicesFiltered(" -A 60 reference/schema.graphql`
 - `reference/schema-map.md` lists every root query and mutation with signatures.

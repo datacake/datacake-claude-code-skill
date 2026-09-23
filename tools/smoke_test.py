@@ -257,6 +257,32 @@ def main():
         shapes["deviceFolders"] = (w.get("deviceFolders") or "")[:500]
         shapes["zones"] = w["zones"]
 
+    # 8a. Rule Engine NG: full rule (action union fragments) and execution log of the first rule (read-only)
+    rules = (w or {}).get("rulesNG") or []
+    if rules:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "datacake", "scripts"))
+        import rules as rules_mod  # noqa: E402
+        r = gql(rules_mod.GET_QUERY, {"id": rules[0]["id"]}, token)
+        rule = (r.get("data") or {}).get("ruleNG")
+        shapes["ruleNG"] = rule
+        check("ruleNG detail (conditions, action fragments)", bool(rule) and not r.get("errors"), ("%s: mode=%s triggers=%s conditions=%d actions=%s" % (
+            rule["name"], rule.get("executionMode"), rules_mod.triggers_of(rule), len(rule.get("conditions") or []),
+            rules_mod.actions_summary(rule.get("actions")))) if rule else "errors=%s" % json.dumps(r.get("errors"))[:300])
+        r = gql(rules_mod.LOGS_QUERY, {"id": rules[0]["id"], "first": 3, "filter": None}, token)
+        conn = ((r.get("data") or {}).get("ruleNG") or {}).get("executionLogEntries")
+        shapes["ruleNG_logs"] = conn
+        check("ruleNG executionLogEntries", "data" in r, "entries=%s errors=%s" % (
+            len((conn or {}).get("edges") or []) if conn is not None else None, json.dumps(r.get("errors"))[:200]))
+        r = gql("""query($wid: String!) { workspace(id: $wid) { entitlementRulesQuota entitlementRulesQuotaRemaining entitlementRulesLogRetrievableHours
+          pushRecipientCandidates { reachable user { id email } } } }""", {"wid": wid}, token)
+        w8 = (r.get("data") or {}).get("workspace") or {}
+        shapes["rules_entitlements"] = w8
+        check("rules entitlements + push recipients", bool(w8) and not r.get("errors"), "quota=%s/%s logHours=%s recipients=%s" % (
+            w8.get("entitlementRulesQuotaRemaining"), w8.get("entitlementRulesQuota"), w8.get("entitlementRulesLogRetrievableHours"),
+            len(w8.get("pushRecipientCandidates") or [])))
+    else:
+        print("   (no rules in %s; rule detail and log checks skipped)" % slug)
+
     # 8b. organizations, admins, cross-workspace member visibility, white label sites (read-only)
     r = gql("""query { user { id isApiuser whitelabelSites { id title domain brand } }
       organizations(first: 20, orderBy: NAME_ASC) { totalCount edges { node { id name permissions

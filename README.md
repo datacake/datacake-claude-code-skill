@@ -5,9 +5,9 @@ An [Agent Skill](https://agentskills.io) that teaches Claude Code and other AI a
 The skill bundles:
 
 - `skills/datacake/SKILL.md` – the entry point: Datacake mental model, essential queries, decision guide, hard rules and workflows.
-- `skills/datacake/reference/` – platform concepts, API basics, device/measurement/semantics query references, mutations, a curated schema map, the full GraphQL schema (SDL), and playbooks for Next.js and Expo apps and analytics scripts.
+- `skills/datacake/reference/` – platform concepts, API basics, device/measurement/semantics query references, mutations, the Rule Engine NG (rules, conditions, actions, notification templates, logs), organizations and members, a curated schema map, the full GraphQL schema (SDL), and playbooks for Next.js and Expo apps and analytics scripts.
 - `skills/datacake/assets/brand/` – Datacake logo files (wordmark black/white, icon mark, favicon, app icons) used as the default branding of generated frontends when the user supplies none; colour tokens and usage in `reference/branding.md`. Trademark notice in `assets/brand/README.md`.
-- `skills/datacake/scripts/` – dependency-free Python 3 helpers: `dc.py` (run GraphQL operations), `discover.py` (map a workspace: products, field identifiers, tags, semantics), `history_to_csv.py` (historical data to CSV), `fetch_schema.py` (refresh the bundled schema).
+- `skills/datacake/scripts/` – dependency-free Python 3 helpers: `dc.py` (run GraphQL operations), `discover.py` (map a workspace: products, field identifiers and ids, tags, semantics, downlinks), `members.py` (members, invites, API users), `rules.py` (Rule Engine NG: ids, list, get, export, create, update, enable/disable, delete, logs), `history_to_csv.py` (historical data to CSV), `fetch_schema.py` (refresh the bundled schema).
 
 ## Install
 
@@ -52,9 +52,10 @@ mkdir -p ~/.datacake && echo -n "..." > ~/.datacake/token && chmod 600 ~/.dataca
 python3 skills/datacake/scripts/dc.py 'query { user { id email } }'
 python3 skills/datacake/scripts/discover.py                 # workspaces; add --orgs for organizations
 python3 skills/datacake/scripts/members.py list <workspace> # members, invites, API users (--csv for export)
+python3 skills/datacake/scripts/rules.py list <workspace>   # Rule Engine NG rules; rules.py ids <workspace> prints the ids a new rule needs
 ```
 
-Admin tooling (organizations, members, invites, white label users, audit log) is covered in `skills/datacake/reference/organizations-and-members.md`; `members.py invite|move|remove` run the bulk operations as a dry run unless `--execute` is given.
+Admin tooling (organizations, members, invites, white label users, audit log) is covered in `skills/datacake/reference/organizations-and-members.md`; `members.py invite|move|remove` run the bulk operations as a dry run unless `--execute` is given. Alerting and automation (Rule Engine NG) is covered in `skills/datacake/reference/rules-ng.md`; `rules.py create|update|enable|disable|delete` are dry runs without `--execute`.
 
 Never commit tokens. The skill instructs agents to keep tokens server-side in any app they build.
 
@@ -69,7 +70,7 @@ python3 skills/datacake/scripts/fetch_schema.py           # rewrite reference/sc
 
 ```bash
 python3 -m pip install --user graphql-core
-python3 tools/validate_examples.py          # every ```graphql block in the skill validates against the schema
+python3 tools/validate_examples.py          # every ```graphql block and every ```json <InputType> block in the skill validates against the schema
 DATACAKE_TOKEN=... python3 tools/smoke_test.py   # runs the canonical queries against a real workspace (read-only)
 python3 tools/check_assets.py             # brand asset files present in skills/datacake/assets/brand/
 claude plugin validate . --strict           # frontmatter and manifest checks

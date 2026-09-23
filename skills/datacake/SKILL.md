@@ -1,9 +1,9 @@
 ---
 name: datacake
-description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the Datacake data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current measurements, historical data, KPIs and cross-device aggregations, consumption and meter analysis, plus core mutations (device creation, data ingestion via REST/MQTT, downlinks, rules), and the administration model (organizations and their admins, workspace members, invites, permissions, API users, white label sites, users and audit logs) for building admin consoles, white label customer portals and bulk onboarding scripts. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, organizations, members, measurements, LoRaWAN sensor data in Datacake, or wants a dashboard, app, report, admin tool or integration built on Datacake data.
+description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current and historical measurements, KPIs, cross-device aggregations and meter consumption, core mutations (device creation, data ingestion via REST/MQTT, downlinks), the Rule Engine NG (list, create and update rules, conditions, actions, notification templates, logs), and the administration model (organization admins, workspace members, invites, permissions, API users, white label sites, audit logs) for admin consoles and bulk onboarding. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, members, measurements, rules or alerts, LoRaWAN data in Datacake, or wants a dashboard, app, report, admin tool, alerting rule or integration on Datacake data.
 license: MIT
 metadata:
-  version: 0.2.0
+  version: 0.3.0
   api: https://api.datacake.co/graphql/
   docs: https://docs.datacake.de
 ---
@@ -23,7 +23,7 @@ Pick the mode from the request before doing anything else:
 
 Intake: ask both questions at once (as a structured choice when the agent supports it). If the user does not answer, state the assumption and continue.
 
-1. **What do you want to build?** Cold-chain monitoring · Fleet health / operations · Energy & meters · Indoor air quality · Asset tracking with zones · Occupancy / people counting · Water, tanks & fill level · Admin or white label tool (organizations, workspaces, members, invites) · Analysis or script · Something else (describe it). Each archetype maps to a row of the purpose table in `reference/frontend-nextjs.md` (KPIs, widgets, queries, semantics).
+1. **What do you want to build?** Cold-chain monitoring · Fleet health / operations · Energy & meters · Indoor air quality · Asset tracking with zones · Occupancy / people counting · Water, tanks & fill level · Alerting & automation (rules, notifications, scheduled downlinks) · Admin or white label tool (organizations, workspaces, members, invites) · Analysis or script · Something else (describe it). Each archetype maps to a row of the purpose table in `reference/frontend-nextjs.md` (KPIs, widgets, queries, semantics).
 2. **Connect a workspace, or start generic?**
    - *Connect*: the user provides a token via `DATACAKE_TOKEN` or `~/.datacake/token`. Recommend a read-only API user (Members > API Users, view-only device access) over a personal token, which carries every workspace of that user. Then `scripts/discover.py` yields real product identifiers, semantics, tags and sample devices, and results can be tested live.
    - *Generic*: no token yet. Build against `reference/schema.graphql` with one config module (workspace id, identifiers), semantics and role fields instead of hardcoded identifiers, mock data for the UI, and finish with the connect steps. Never block on the token.
@@ -42,7 +42,7 @@ Organization  → billing, quotas, admins, white label
 - **Semantics** (`TEMPERATURE`, `CO2`, `BATTERY`, `DOOR_OPENED`, …) label fields across products and enable filters, KPIs and aggregations. **Roles** (`PRIMARY`, `SECONDARY`, `DEVICE_BATTERY`, `DEVICE_SIGNAL`, `DEVICE_LOCATION`) mark the main fields of any product. **Tags** group devices.
 - Members are users or **API users** (token-only); permissions exist per workspace (`devices`, `rules`, `members`, …) and per device (`edit_basics`, `edit_product`, `record_measurements`). A personal token carries everything its user may do.
 - People come in four kinds: **organization admins** (`organization.userRelationships`, permissions `members`, `billing`, `whitelabel`, `manage_workspaces`, `create_workspaces`; one owner), **workspace members** (`workspace.userRelationships`), **API users** and **pending invites** (`invitedUsers`, resolved when the invitee signs up). Admins are not members and vice versa; `organization.permissions` and `workspace.myPermissions` describe the caller. **White label sites** brand the portal for customers and carry their own user list, audit log and SSO. Full model and admin recipes: `reference/organizations-and-members.md`.
-- Rules, global dashboards, reports, exports, zones and webhooks are workspace-scoped. Full detail: `reference/platform-concepts.md`.
+- Rules, global dashboards, reports, exports, zones and webhooks are workspace-scoped. Full detail: `reference/platform-concepts.md`. A rule (Rule Engine NG) is scope (one product, optional device/tag filter, execution mode) + triggers + optional conditions + actions with notification templates; everything about it: `reference/rules-ng.md`.
 
 ## Setup and first request
 
@@ -135,6 +135,7 @@ query Kpis($workspaceId: String!) {
 | Charts? | `history(fields, timerangestart, timerangeend, resolution)`; resolution in compact form only (`15m`, `1h`, `24h`, `7d`, `raw`; word forms fall back to auto): ≤48 h `5m`–`15m`, 7 d `1h`, 30 d `6h`–`24h`, 1 y `24h`–`7d`; `locf: true` for meters; values may be numeric strings. One request per device. |
 | Real-time? | No subscriptions: poll every 30–60 s, or bridge the MQTT broker (`dtck/<product_slug>/<device_id>/<FIELD>`) server-side. |
 | Bulk historical data? | Exports (`createManualExport`) or `scripts/history_to_csv.py`, not thousands of `history` calls. |
+| Alerts, notifications, scheduled downlinks? | Rule Engine NG: list with `workspace.rulesNG`, read with `ruleNG(id)`, write with `createRuleNG`/`updateRuleNG`; one product per rule, field/device/downlink UUIDs from `scripts/rules.py ids`, templates such as `{{ triggering_device['measurements']['CO2'] }}`, logs via `executionLogEntries`. All in `reference/rules-ng.md`. |
 | Writes? | REST record endpoint for values, `sendDownlink`, `updateDevice`, `createRuleNG`, … see `reference/mutations.md`; check permissions and confirm destructive actions. |
 
 ## Hard rules
@@ -183,6 +184,13 @@ query Kpis($workspaceId: String!) {
 4. Build reads first (organizations, workspaces, members, invites, audit log), then writes: invite (`addUserToWorkspace`, `brand` for branded emails), permissions (`updateWorkspacePermissions` changeset, `setUserDevicePermissions`), organization admins, remove. Bulk operations are loops in code (no bulk invite, no move mutation); `scripts/members.py invite|move|remove` run them with a dry run by default.
 5. Reading members needs `members` in each workspace; report unreadable workspaces instead of failing. Confirm removals and ownership transfers with the user.
 
+**F. Alerting and automation (rules)** (`reference/rules-ng.md`)
+1. Clarify: what should trigger (measurement threshold, offline, schedule, zone), for which product and devices (all, tags, explicit), who gets notified how (email, SMS, push, webhook) or which downlink/set value runs, and whether reminders and an all-clear are wanted.
+2. Check `workspace.myPermissions` (`rules`), `features` (`RULE_ENGINE`) and `entitlementRulesQuotaRemaining`; resolve ids with `python3 scripts/rules.py ids <workspace> --product "<name>"` (field UUIDs for conditions, device ids, downlinks, push recipients). Without a token: draft the `CreateRuleNGInputType` payload with placeholders and hand over the commands.
+3. Build the payload: explicit `executionMode`, one product, triggers, conditions with client-generated UUID ids and `hysteresis: 0`, actions with all three `fireWhen…` flags plus cooldown/limit, templates with `triggering_device['measurements'][...]`. Reuse a recipe from `reference/rules-ng.md` where one fits.
+4. Show the plan, then `python3 scripts/rules.py create <workspace> --file rule.json` (dry run) and `--execute`; or `createRuleNG` from code. For changes read the rule first (`rules.py get`), then `update` with only the changed fields.
+5. Verify with `rules.py logs <rule-id> --since 24h --trace` (or `executionLogEntries`): conditions evaluate as expected, actions fire once per event, no flood; then hand over the rule id and how to disable it.
+
 ## Reference index
 
 | Read when | File |
@@ -192,7 +200,8 @@ query Kpis($workspaceId: String!) {
 | Listing/filtering/sorting devices, product and field discovery, role fields, tags/metadata/folders, members, public devices | `reference/queries-devices.md` |
 | Current values, time-range statistics, `history` and resolution, meters/consumption (`change`), local time boundaries | `reference/queries-measurements.md` |
 | Semantic catalogue, semantic filters, aggregations, KPI query patterns, sorting by semantic | `reference/semantics-and-kpis.md` |
-| Creating devices/fields, recording data, downlinks, members/API users, rules, dashboards, exports, zones, webhooks | `reference/mutations.md` |
+| Creating devices/fields, recording data, downlinks, members/API users, dashboards, exports, zones, webhooks; rule mutations in short | `reference/mutations.md` |
+| Rule Engine NG: list/read queries, ids a rule needs, execution modes, triggers, conditions, actions, create/update/delete semantics, template variables and filters, execution logs, recipes, pitfalls | `reference/rules-ng.md` |
 | Organizations and their admins, workspace members, invites, permissions, API users, white label users, audit log, SSO; recipes for mass invite, moving members, offboarding, admin UI gating | `reference/organizations-and-members.md` |
 | Signature of any root query or mutation, enum values, key type fields, grep recipes | `reference/schema-map.md` (then `reference/schema.graphql`) |
 | Web app architecture, auth flows, page map, purpose-driven dashboards, snippets | `reference/frontend-nextjs.md` |
@@ -200,7 +209,7 @@ query Kpis($workspaceId: String!) {
 | Mobile app architecture and snippets | `reference/mobile-expo.md` |
 | Scripts, bulk history, consumption analysis, fleet health, pandas, exports | `reference/analytics-recipes.md` |
 
-Scripts (Python 3, no dependencies): `scripts/dc.py` (run queries, `--login`), `scripts/discover.py` (workspace map; `--orgs` for organizations and their workspaces), `scripts/members.py` (list/export members, invite, move, remove; writes need `--execute`), `scripts/history_to_csv.py` (history → CSV with local time), `scripts/fetch_schema.py` (refresh schema and schema map).
+Scripts (Python 3, no dependencies): `scripts/dc.py` (run queries, `--login`), `scripts/discover.py` (workspace map; `--orgs` for organizations and their workspaces), `scripts/members.py` (list/export members, invite, move, remove; writes need `--execute`), `scripts/rules.py` (rule ids, list, get, export, create, update, enable/disable, delete, logs; writes need `--execute`), `scripts/history_to_csv.py` (history → CSV with local time), `scripts/fetch_schema.py` (refresh schema and schema map).
 
 ## Keeping the skill current
 

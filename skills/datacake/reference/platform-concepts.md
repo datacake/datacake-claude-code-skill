@@ -49,7 +49,7 @@ Organization (billing, quotas, admins, white label)
 | Pending invite | `UserWorkspaceInviteType` | `id` UUID, `email` | `workspace.invitedUsers`; resolves at signup |
 | White label site | `WhitelabelSiteType` | `id` (Relay, usable as UUID), `brand`, `domain` | `user.whitelabelSites`, `whitelabelSite(id:)`, `branding`, `brandingForDomain(domain:)` |
 | White label user / audit entry | `WhitelabelUserType` / `AuditLogEntryType` | `id` (Relay) | connections on the site; user ids differ from `UserType.id` |
-| Rule (new engine) | `RuleNGType` | `id` UUID | Workspace-level, filters devices by product/tags |
+| Rule (new engine) | `RuleNGType` | `id` UUID | Workspace-level, one product per rule, optional device/tag filter; see `rules-ng.md` |
 | Dashboard (global) | `DashboardType` | `id` UUID | Device dashboards live in `product.dashboards` |
 | Zone | `ZoneType` | `id` (Relay global ID) | Relay connections: `edges { node { … } }` |
 | Export / Report Builder report | `ExportType` / `ReportBuilderReportType` | `id` (Relay global ID) | Runs produce downloadable artifacts |
@@ -165,16 +165,17 @@ Semantics power the workspace and folder "Overview" KPIs, `devicesFiltered` sema
 
 ## Rules (Rule Engine)
 
-New Rule Engine (`RuleNGType`, `workspace.rulesNG`, mutations `createRuleNG`/`updateRuleNG`/`deleteRuleNG`; needs the `rules` permission and the RULE_ENGINE feature/add-on; quota `entitlementRulesQuota`):
+New Rule Engine (`RuleNGType`, `workspace.rulesNG`, `ruleNG(id)`, mutations `createRuleNG`/`updateRuleNG`/`deleteRuleNG`; needs the `rules` permission and the `RULE_ENGINE` feature/add-on; quota `entitlementRulesQuota`, `entitlementRulesQuotaRemaining`). Full reference with list/read queries, id resolution, update semantics, template variables, logs and recipes: `rules-ng.md`.
 
 | Part | Options |
 |---|---|
-| Scope | one product (`productFilter`) and either all its devices, explicit devices (`devicesFilter`) or tag filters (`tagsFilter` + `tagsFilterConjunction` any/all); `executionMode` `DEVICE_LEVEL` (evaluate per device), `SYSTEM_LEVEL`, `GATEWAY_LEVEL`; one rule can cover up to 1000 devices |
-| Triggers | new measurement (optionally only specific fields), device goes offline/online, gateway goes offline/online, schedule (`scheduleTriggerCrontab` in the rule's `timezone`), zone entry/exit/length of stay |
-| Conditions | optional; each compares a left operand (a field of the triggering device or of a fixed device, evaluated as current value or a time-range operation such as average/min/max/sum/count/change over e.g. `"1 hour ago"` to `"now"`) with a right operand (constant number, range, boolean, string, geofence, a field of the triggering or another device, or a configuration field) using `EQUALS`, `NOT_EQUALS`, `CONTAINS`, `NOT_CONTAINS`, `LESS_THAN(_OR_EQUAL)`, `GREATER_THAN(_OR_EQUAL)`, `INSIDE_RANGE`, `OUTSIDE_RANGE`, with optional hysteresis; combined with `AND`/`OR` |
+| Scope | one product (`productFilter`) and either all its devices, explicit devices (`devicesFilter`) or tag filters (`tagsFilter` + `tagsFilterConjunction` `"AND"`/`"OR"`); one rule can cover up to 1000 devices |
+| Execution mode | `DEVICE_LEVEL` (runs once per device; `triggering_device` in templates), `GATEWAY_LEVEL` (once per Datacake LNS gateway; `triggering_gateway`), `SYSTEM_LEVEL` (once per trigger, e.g. one scheduled report; address devices as `devices["<uuid>"]`). The API defaults to `DEVICE_LEVEL` |
+| Triggers | new measurement (optionally only specific fields, by field UUID), device goes offline/online, gateway goes offline/online, schedule (`scheduleTriggerCrontab`, 5-field cron in the rule's `timezone`), zone entry/exit/length of stay |
+| Conditions | optional; each compares a left operand (a field of the triggering device or of a fixed device, evaluated as current value or a time-range operation such as average/min/max/sum/count/change over e.g. `"1 hour ago"` to `"now"`) with a right operand (constant number with hysteresis, range, boolean, string, a field of the triggering or another device, or a configuration field of the triggering device) using `EQUALS`, `NOT_EQUALS`, `CONTAINS`, `NOT_CONTAINS`, `LESS_THAN(_OR_EQUAL)`, `GREATER_THAN(_OR_EQUAL)`, `INSIDE_RANGE`, `OUTSIDE_RANGE`; chained with `AND`/`OR` |
 | Actions | `EMAIL`, `SMS` (needs credits), `WEBHOOK` (URL, headers, payload template), `PUSH` (Datacake mobile app, workspace members), `SINGLE_DEVICE_DOWNLINK`, `MULTI_DEVICE_DOWNLINK` (by product + tags), `SET_VALUE` (write a field on the triggering or another device); each action fires when conditions become hot, stay hot and/or become cold, with `minSecondsBetweenHotConditions`, `maxConsecutiveActionExecutions` and weekday/time restrictions |
-| Templates | email/SMS/webhook/push bodies use Django/Jinja-style templates: `{{ triggering_device["name"] }}`, `{{ triggering_device["values"]["TEMPERATURE"] }}`, `{{ triggering_device["timestamps"]["TEMPERATURE"] | datetime }}`, `{{ rule["name"] }}` |
-| Logs | `rule.executionLogEntries` (trigger, evaluation trace, fired actions), retrievable for `entitlementRulesLogRetrievableHours` |
+| Templates | email/SMS/push/webhook texts use the Django Template Language: `{{ triggering_device['name'] }}`, `{{ triggering_device['measurements']['TEMPERATURE'] }}`, `{{ triggering_device['timestamps']['TEMPERATURE'] | datetime }}`, `{{ rule['name'] }}`; also `triggering_gateway`, `triggering_zone`, `devices["<uuid>"]`, filters `round(2)`, `json` |
+| Logs | `ruleNG.executionLogEntries` (trigger, evaluation trace, fired actions, filterable), retrievable for `entitlementRulesLogRetrievableHours` |
 
 Legacy rules (`workspace.rules`, `CloudRuleType`, `hasLegacyRules`) are per-device condition/action sets with hysteresis, retriggering and rate limits. Prefer the new engine for anything new. Per-user offline emails exist separately (`device.notifyOffline`, `setNotifyOffline`).
 

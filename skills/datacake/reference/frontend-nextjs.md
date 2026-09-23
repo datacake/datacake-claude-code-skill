@@ -96,7 +96,7 @@ Data layer rules: one module owns the GraphQL documents; components receive type
 | Device detail | `device(deviceId)` + `currentMeasurements(fieldNames)` + `history` per chart + `currentConfigurationValues` | tabs: Overview, History, Details; resolution selector |
 | Purpose dashboard | semantic KPIs, per-tag aliases, alert lists, meter `change()` windows | see next section |
 | Map | devices with `currentLocation`, zones | cluster markers, status colour |
-| Alerts | `devicesFiltered` with thresholds; optionally `rulesNG` + `executionLogEntries` | counts first, paginated lists |
+| Alerts | `devicesFiltered` with thresholds; optionally `rulesNG` + `executionLogEntries`; a rule editor follows `reference/rules-ng.md` (needs the `rules` permission, ids from `product.measurementFields { id }`) | counts first, paginated lists |
 | Settings | workspace switch, time zone, units, refresh interval | store in cookie/localStorage |
 
 ## Admin and white label tools
