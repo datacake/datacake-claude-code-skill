@@ -16,7 +16,9 @@ Usage:
 
 <workspace> is a UUID or slug. Write commands print their plan; add --execute to run them.
 `create` accepts the portal's copy/paste JSON too (productId, updateActions with ids are converted).
-Condition ids are generated when missing, null hysteresis becomes 0, action firing flags get defaults.
+Condition ids are generated when missing, hysteresis is set to 0 on static number/range operands and removed
+elsewhere (the API rejects it there), action firing flags get defaults, templates are checked for unsupported
+filters and tags (the engine renders only {{ }} with round, datetime and json).
 Token: $DATACAKE_TOKEN or ~/.datacake/token (or --token). Standard library only; reuses dc.py.
 Reference: reference/rules-ng.md
 """
@@ -127,6 +129,7 @@ query RuleLogs($id: UUID!, $first: Int, $after: String, $filter: RuleExecutionLo
           triggeringDevice { id verboseName }
           triggeringGateway { id name }
           conditionsResult conditionsPrettyEvaluationTrace actionFiringEvent anyActionFired
+          actionExecutionVariables
           actionExecutionLogEntries { id kind isFired isFiredByEvent isWithinActiveTimePeriod prettyTrace }
         }
       }
@@ -317,8 +320,11 @@ def normalize_condition(cond):
     if left.get("kind") == "TRIGGERING_DEVICE_FIELD_VALUE":
         left.pop("deviceId", None)
     right = cond.get("rightOperand") or {}
-    if right.get("kind") == "STATIC_NUMBER_VALUE" and right.get("hysteresis") is None:
-        right["hysteresis"] = 0
+    if right.get("kind") in ("STATIC_NUMBER_VALUE", "STATIC_RANGE_VALUE"):
+        if right.get("hysteresis") is None:
+            right["hysteresis"] = 0
+    else:
+        right.pop("hysteresis", None)  # only static number/range operands may carry it; the API rejects it elsewhere
     cond["leftOperand"], cond["rightOperand"] = left, right
     return cond
 
@@ -361,6 +367,30 @@ def normalize_action(action, keep_id, defaults):
         action.setdefault("minSecondsBetweenHotConditions", 0)
         action.setdefault("maxConsecutiveActionExecutions", 0)
     return action
+
+
+TEMPLATE_FIELDS = ("emailSubject", "emailBody", "smsBody", "pushTitle", "pushBody", "webhookPayload")
+KNOWN_FILTERS = {"round", "datetime", "json"}
+
+
+def template_warnings(actions):
+    """The rule engine renders only {{ }} expressions with the filters round, datetime and json (verified live):
+    an unknown filter leaves the whole text unrendered, {% %} tags are printed verbatim."""
+    out = []
+    for a in actions or []:
+        texts = [(f, a.get(f)) for f in TEMPLATE_FIELDS if isinstance(a.get(f), str)]
+        texts += [("webhookHeaders", h.get("value")) for h in a.get("webhookHeaders") or [] if isinstance(h, dict) and isinstance(h.get("value"), str)]
+        for field, text in texts:
+            label = "%s.%s" % (a.get("description") or a.get("kind") or "action", field)
+            if "{%" in text:
+                out.append("%s: {%% %%} tags are not interpreted by the rule engine (they stay in the text)" % label)
+            for expr in re.findall(r"{{(.*?)}}", text, re.S):
+                for filt in re.findall(r"\|\s*([A-Za-z_]+)", expr):
+                    if filt not in KNOWN_FILTERS:
+                        out.append("%s: unknown filter '%s' (only round, datetime, json exist); the whole text would be sent unrendered" % (label, filt))
+            if "['values']" in text or '["values"]' in text:
+                out.append("%s: 'values' is not a template key (renders empty); use 'measurements'" % label)
+    return out
 
 
 def normalize_input(doc, for_update):
@@ -576,7 +606,8 @@ def cmd_create(api, args):
     if ws.get("entitlementRulesQuotaRemaining") == 0:
         warnings.append("rules quota exhausted")
     if doc.get("triggerOnMeasurement") and not doc.get("conditions"):
-        warnings.append("measurement trigger without conditions fires on every uplink")
+        warnings.append("measurement trigger without conditions runs every action on every uplink (fire flags, cooldown and limits are ignored)")
+    warnings += template_warnings(doc.get("createActions"))
     if any(doc.get(f) for f in ("triggerOnMeasurement", "triggerOnDeviceGoesOffline", "triggerOnDeviceGoesOnline")) and not doc.get("productFilterId"):
         warnings.append("device-level triggers need productFilterId")
     if not any(doc.get(f) for f, _ in TRIGGER_FLAGS):
@@ -603,6 +634,8 @@ def cmd_update(api, args):
     print("PLAN: update rule %s (%s) with:\n%s" % (rule["name"], rule["id"], json.dumps(doc, indent=2, ensure_ascii=False)))
     if doc.get("conditions") is not None:
         print("  note: 'conditions' replaces the complete condition list (%d -> %d)" % (len(rule.get("conditions") or []), len(doc["conditions"])))
+    for w in template_warnings(list(doc.get("createActions") or []) + list(doc.get("updateActions") or [])):
+        print("  WARNING: %s" % w)
     if not args.execute:
         print("dry run: add --execute to apply")
         return
@@ -682,10 +715,21 @@ def cmd_logs(api, args):
     if args.trace:
         for e in entries:
             print("\n--- %s %s" % (e.get("triggerTimestamp"), (e.get("triggeringDevice") or {}).get("verboseName") or ""))
-            print(e.get("conditionsPrettyEvaluationTrace") or "(no condition trace)")
-            for a in e.get("actionExecutionLogEntries") or []:
-                print("  [%s] fired=%s byEvent=%s inTimeWindow=%s\n  %s" % (
-                    a.get("kind"), a.get("isFired"), a.get("isFiredByEvent"), a.get("isWithinActiveTimePeriod"), (a.get("prettyTrace") or "").replace("\n", "\n  ")))
+            print(e.get("conditionsPrettyEvaluationTrace") or "(no conditions)")
+            variables = []
+            for raw in e.get("actionExecutionVariables") or []:
+                try:
+                    variables.append(json.loads(raw) if isinstance(raw, str) else raw)
+                except ValueError:
+                    variables.append({})
+            for i, a in enumerate(e.get("actionExecutionLogEntries") or []):
+                rv = ((variables[i] if i < len(variables) else None) or {}).get("runtime_variables") or {}
+                detail = {k: v for k, v in rv.items() if k not in ("email_body", "email_subject", "email_receivers", "push_body", "push_title",
+                                                                    "is_fired_by_event", "is_within_active_time_period", "email_branding_title")}
+                print("  [%s] fired=%s byEvent=%s inTimeWindow=%s%s\n  %s" % (
+                    a.get("kind"), a.get("isFired"), a.get("isFiredByEvent"), a.get("isWithinActiveTimePeriod"),
+                    (" " + json.dumps(detail, ensure_ascii=False)) if detail else "",
+                    (a.get("prettyTrace") or "(not executed: no trace)").replace("\n", "\n  ")))
 
 
 def main():

@@ -3,7 +3,7 @@ name: datacake
 description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current and historical measurements, KPIs, cross-device aggregations and meter consumption, core mutations (device creation, data ingestion via REST/MQTT, downlinks), the Rule Engine NG (list, create and update rules, conditions, actions, notification templates, logs), and the administration model (organization admins, workspace members, invites, permissions, API users, white label sites, audit logs) for admin consoles and bulk onboarding. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, members, measurements, rules or alerts, LoRaWAN data in Datacake, or wants a dashboard, app, report, admin tool, alerting rule or integration on Datacake data.
 license: MIT
 metadata:
-  version: 0.3.0
+  version: 0.3.1
   api: https://api.datacake.co/graphql/
   docs: https://docs.datacake.de
 ---
@@ -187,9 +187,9 @@ query Kpis($workspaceId: String!) {
 **F. Alerting and automation (rules)** (`reference/rules-ng.md`)
 1. Clarify: what should trigger (measurement threshold, offline, schedule, zone), for which product and devices (all, tags, explicit), who gets notified how (email, SMS, push, webhook) or which downlink/set value runs, and whether reminders and an all-clear are wanted.
 2. Check `workspace.myPermissions` (`rules`), `features` (`RULE_ENGINE`) and `entitlementRulesQuotaRemaining`; resolve ids with `python3 scripts/rules.py ids <workspace> --product "<name>"` (field UUIDs for conditions, device ids, downlinks, push recipients). Without a token: draft the `CreateRuleNGInputType` payload with placeholders and hand over the commands.
-3. Build the payload: explicit `executionMode`, one product, triggers, conditions with client-generated UUID ids and `hysteresis: 0`, actions with all three `fireWhen…` flags plus cooldown/limit, templates with `triggering_device['measurements'][...]`. Reuse a recipe from `reference/rules-ng.md` where one fits.
+3. Build the payload: explicit `executionMode`, one product, triggers, conditions with client-generated UUID ids (`hysteresis: 0` on static number/range operands only), actions with all three `fireWhen…` flags plus cooldown/limit, templates with `{{ triggering_device['measurements'][...] }}` and only the filters `round`, `datetime`, `json` (no `{% %}` tags). Reuse a recipe from `reference/rules-ng.md` where one fits.
 4. Show the plan, then `python3 scripts/rules.py create <workspace> --file rule.json` (dry run) and `--execute`; or `createRuleNG` from code. For changes read the rule first (`rules.py get`), then `update` with only the changed fields.
-5. Verify with `rules.py logs <rule-id> --since 24h --trace` (or `executionLogEntries`): conditions evaluate as expected, actions fire once per event, no flood; then hand over the rule id and how to disable it.
+5. Verify with `rules.py logs <rule-id> --since 24h --trace` (or `executionLogEntries`): conditions evaluate as expected, actions fire once per event (become hot / stay hot / become cold), no flood; then hand over the rule id and how to disable it.
 
 ## Reference index
 

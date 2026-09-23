@@ -1,6 +1,6 @@
 # Rule Engine NG: alerts and automations
 
-How the new rule engine (`RuleNGType`, "Rule NG") works and how to list, read, create, update, delete and debug rules through the API. Verified against `reference/schema.graphql`, the portal's rule form and the platform documentation (https://docs.datacake.de/portal/rule-engine/new-rule-engine). Legacy rules (`CloudRuleType`) are only mentioned at the end.
+How the new rule engine (`RuleNGType`, "Rule NG") works and how to list, read, create, update, delete and debug rules through the API. Verified against `reference/schema.graphql`, the portal's rule form and the platform documentation (https://docs.datacake.de/portal/rule-engine/new-rule-engine), and checked live on 2026-09-23 against a test workspace (create, update, delete, evaluation traces, action firing, template rendering, logs); statements marked *untested* were out of reach of that token. Legacy rules (`CloudRuleType`) are only mentioned at the end.
 
 ## Contents
 
@@ -50,10 +50,10 @@ query RulePrerequisites($workspaceId: String!) {
 }
 ```
 
-- `myPermissions` must contain `rules` for every write and for the logs (whether plain reads work without it is untested; handle a `null` `rulesNG`).
+- `myPermissions` must contain `rules` for every write and for the logs. The portal hides the Rule Engine pages without it; whether `rulesNG` is readable without it is *untested* (the test token had the permission), so handle a `null` `rulesNG`.
 - `features` must contain `RULE_ENGINE`; the rule engine is a plan feature or add-on (Standard, Plus, Enterprise). Without it writes fail; read `error { code details }`.
-- `entitlementRulesQuotaRemaining` is the number of rules that can still be created; at 0 expect an error such as `INSUFFICIENT_QUOTA`.
-- `entitlementRulesLogRetrievableHours` limits how far back `executionLogEntries` reach.
+- `entitlementRulesQuotaRemaining` is the number of rules that can still be created; `-1` means unlimited. At 0 expect `ok: false` from `createRuleNG` (the code is *untested*; input problems come back as `VALIDATION_ERROR` with a `details` list).
+- `entitlementRulesLogRetrievableHours` limits how far back `executionLogEntries` reach (24 on the test workspace).
 - SMS actions consume organization SMS credits; push actions need the Datacake app on the recipients' phones and a branding with mobile push enabled.
 
 ## Resolve the ids a rule needs
@@ -81,7 +81,7 @@ query RuleBuildingBlocks($workspaceId: String!, $productId: String!, $tags: Filt
 - `$tags` is `{ "contains": ["floor-1"] }` (all tags) or `null` for every device. One field by identifier: `product(id: $productId) { measurementField(fieldName: "CO2") { id } }`; one configuration field: `configurationField(fieldName: "TARGET_TEMPERATURE") { id }`.
 - `python3 scripts/discover.py <workspace>` prints the field ids next to the identifiers, plus product downlinks; `python3 scripts/rules.py ids <workspace> --product <name>` prints only the rule building blocks.
 - `pushRecipientCandidates(forWhitelabelSiteId:)` filters recipients for a white label brand; `reachable: false` means the member has not signed in to the app yet (still selectable).
-- Devices in `devicesFilterIds` must belong to the product in `productFilterId`.
+- Devices in `devicesFilterIds` must belong to the product in `productFilterId`. Unknown or foreign ids in `devicesFilterIds`, `triggeringMeasurementFields` and `pushRecipientIds` are dropped silently (the rule is created with the remaining ids, or an empty list), so read the rule back after creating it. A random `fieldId` in a condition fails with a generic GraphQL error ("An unexpected error occurred"), not with `VALIDATION_ERROR`.
 
 ## List rules
 
@@ -171,7 +171,11 @@ Any combination of the flags below can be enabled on one rule; a rule with no tr
 | Schedule | `triggerOnSchedule: true`, `scheduleTriggerCrontab: "0 8 * * 1-5"` | 5-field cron (`min hour day month weekday`, `*` `,` `-` `/`), evaluated in the rule's `timezone`; `DEVICE_LEVEL` runs per device, `SYSTEM_LEVEL` once | `SCHEDULE` |
 | Zone entry / exit / length of stay | `triggerOnZoneEntry`, `triggerOnZoneExit`, `triggerOnZoneLengthOfStay` + `zoneLengthOfStayTriggerMinutes`, `zoneTagsFilter` + `zoneTagsFilterConjunction` | needs the `ZONES` feature and a field with the `DEVICE_LOCATION` role; zone tags select which zones count | `ZONE_ENTRY`, `ZONE_EXIT`, `ZONE_LENGTH_OF_STAY` |
 
-Conditions are optional for offline/online, gateway, schedule and zone triggers. For measurement triggers define at least one condition, or the rule fires on every uplink.
+Conditions are optional for offline/online, gateway, schedule and zone triggers. For measurement triggers define at least one condition, or the rule fires on every uplink. Verified behaviour:
+
+- A rule without conditions runs every action on every trigger and ignores the `fireWhen…` flags, the cooldown and the execution limit (log: `actionFiringEvent: NONE`, `conditionsResult: null`).
+- A rule with conditions evaluates them on every trigger: the first true evaluation is `CONDITIONS_BECOME_HOT`, later ones are `CONDITIONS_STAY_HOT` until the conditions turn false (`CONDITIONS_BECOME_COLD`). This also holds for schedule ticks, so a scheduled check that stays true fires its become-hot actions once; reminders need `fireWhenConditionsStayHot`.
+- A value recorded on a field that is not in `triggeringMeasurementFields` does not trigger the rule.
 
 ## Conditions
 
@@ -190,23 +194,25 @@ Right operand kinds (`RuleNGRightOperandInputType`):
 
 | `kind` | Fields | Meaning |
 |---|---|---|
-| `STATIC_NUMBER_VALUE` | `numberValue`, `hysteresis` (send `0`, not `null`) | constant threshold |
-| `STATIC_RANGE_VALUE` | `rangeValue: { start, end, includeBoundaries }` | with `INSIDE_RANGE` / `OUTSIDE_RANGE` |
+| `STATIC_NUMBER_VALUE` | `numberValue`, `hysteresis` (`0` for none; omitting it stores `null`, an explicit `null` is rejected) | constant threshold |
+| `STATIC_RANGE_VALUE` | `rangeValue: { start, end, includeBoundaries }`, optional `hysteresis` | with `INSIDE_RANGE` / `OUTSIDE_RANGE` |
 | `STATIC_BOOLEAN_VALUE` | `booleanValue` | with `EQUALS` / `NOT_EQUALS` |
 | `STATIC_STRING_VALUE` | `stringValue` | with `EQUALS`, `CONTAINS`, … |
 | `DYNAMIC_TRIGGERING_DEVICE_FIELD_VALUE` | `fieldId` | another field of the same device (e.g. setpoint field) |
 | `DYNAMIC_DEVICE_FIELD_VALUE` | `fieldId`, `deviceId` | a field of a fixed device (e.g. outdoor sensor) |
 | `DYNAMIC_CONFIGURATION_FIELD_VALUE` | `fieldId` = configuration field id | per-device threshold from a configuration field of the triggering device (default value or device override) |
 
-`geofenceValue` is a string for location fields; the portal writes it, the format is undocumented: copy it from an existing rule (`rules.py get`).
+Each right operand accepts only the fields of its kind: `hysteresis` is allowed on `STATIC_NUMBER_VALUE` and `STATIC_RANGE_VALUE` only; sending it (even `0`) with a `DYNAMIC_*` kind, or `rangeValue` together with `STATIC_NUMBER_VALUE`, fails with `VALIDATION_ERROR` ("… is not valid under any of the given schemas"). Operand types must match the field type: a number field against a boolean or string operand fails with "Cannot perform EQUALS operation on NUMBER and BOOLEAN types". A `TRIGGERING_DEVICE_FIELD_VALUE` operand needs `productFilterId` or `devicesFilterIds` on the rule ("Condition with index 0 cannot reference triggering device measurement field in left operand" otherwise); `STATIC_DEVICE_FIELD_VALUE` needs `deviceId`.
 
-Hysteresis: with `GREATER_THAN 30` and `hysteresis: 2` the condition becomes hot above 30 and becomes cold only once the value drops below 28, which suppresses flapping around the threshold.
+`geofenceValue` exists in the schema but is dead: the API rejects it with every operand kind and the portal never writes it. Location logic uses the zone triggers instead (`triggerOnZoneEntry`/`Exit`/`LengthOfStay` with `zoneTagsFilter`).
 
-Time-range operation on the left operand (`timerangeOperation: { kind, start, end }`): instead of the current value, evaluate an aggregate over a window given in plain English relative phrases (`"15 minutes ago"`, `"24 hours ago"`, `"7 days ago"`, `"now"`; English only). Kinds: `AVERAGE`, `MIN`, `MAX`, `SUM`, `COUNT` (number of datapoints; use it to detect missing uplinks), `ABSOLUTE_CHANGE` (last minus first value in the window), `RELATIVE_CHANGE` (the same change as a percentage). The platform docs describe the two change kinds inconsistently, so confirm the behaviour on a test rule with `conditionsPrettyEvaluationTrace`. The window must be longer than the device's send interval, otherwise `MIN`/`MAX` see a single value.
+Hysteresis: with `GREATER_THAN 30` and `hysteresis: 2` the condition becomes hot above 30 and becomes cold only once the value drops below 28, which suppresses flapping around the threshold (verified with `GREATER_THAN 4`, `hysteresis: 1`: 6.5 hot, 3.5 still hot, 2.0 cold; the trace prints `> 4.0 (+/-1.0 hysteresis)` while the hysteresis is active).
+
+Time-range operation on the left operand (`timerangeOperation: { kind, start, end }`): instead of the current value, evaluate an aggregate over a window given in plain English relative phrases (`"15 minutes ago"`, `"24 hours ago"`, `"7 days ago"`, `"now"`; English only). Kinds: `AVERAGE`, `MIN`, `MAX`, `SUM`, `COUNT` (number of datapoints; use it to detect missing uplinks), `ABSOLUTE_CHANGE` (last value minus first value in the window), `RELATIVE_CHANGE` (that difference divided by the first value, in percent). Verified: the window is `[trigger time − N, trigger time]` and includes the value that triggered the evaluation; with the values 0.49 … −2.82 in the window the trace showed `ABSOLUTE_CHANGE` −3.31 and `RELATIVE_CHANGE` −675.51, `COUNT` 4, `AVERAGE` −0.09. `start`/`end` are stored as given and only parsed when the rule runs: a German phrase or a typo is accepted by `createRuleNG` and breaks the rule later, so keep to `N minutes|hours|days ago` and `now` (an ISO timestamp as `start` is accepted; *untested* at evaluation). The window must be longer than the device's send interval, otherwise `MIN`/`MAX` see a single value.
 
 "Stays above/below for N minutes" is expressed with `MIN`/`MAX`: `MIN` over the last 30 minutes `GREATER_THAN 10` means every value in the window was above 10; `MAX` over the last 60 minutes `LESS_THAN -10` means it never rose above -10.
 
-Mixed `AND`/`OR` chains have no documented precedence; keep one conjunction per rule or split into two rules.
+`AND` binds tighter than `OR` (verified): an `OR` starts a new group and the rule is hot when any group is completely true, so `c1 AND c2 OR c3` means `(c1 AND c2) OR c3`. Evaluation short-circuits: inside a group the remaining conditions are `Skipped` after the first false one, and everything after a true group is `Aborted`. The `conjunction` of the first condition is ignored. Keep chains readable anyway; split unrelated logic into two rules.
 
 ## Actions
 
@@ -219,27 +225,27 @@ Common fields of every action (`CreateRuleNGActionInputType`):
 | `fireWhenConditionsBecomeHot` | run when the conditions turn true (the alarm) |
 | `fireWhenConditionsStayHot` | run again on every evaluation while they stay true (reminders); combine with the two limits below |
 | `fireWhenConditionsBecomeCold` | run when they turn false again (all-clear, revert a set value) |
-| `minSecondsBetweenHotConditions` | cooldown between two hot executions (0 = none) |
-| `maxConsecutiveActionExecutions` | how many times the action may run while the conditions stay hot (0 = unlimited) |
-| `timeRestrictions` | `{ kind: ENABLED_DURING | DISABLED_DURING, timeRestrictions: [{ start: { dayOfWeek, time }, end: { dayOfWeek, time } }] }`; `dayOfWeek` 0 = Sunday … 6 = Saturday, `time` `"HH:MM"` in the rule's timezone; each entry is one continuous window from start to end (Monday 08:00 to Friday 18:00 includes the nights), so business hours need one entry per day. Outside the window the action is skipped and logged as not executed |
+| `minSecondsBetweenHotConditions` | minimum seconds between two hot-side executions of this action (become hot and stay hot), measured from its last execution; a new alarm inside the cooldown is suppressed too (0 = none) |
+| `maxConsecutiveActionExecutions` | limit for reminders: the action's executions are counted consecutively (become hot, stay hot and become cold executions all count), the counter is reset when the conditions become cold, and a stay-hot execution is skipped once the counter has reached the limit. Become-hot and become-cold executions are never blocked by it: `3` = alarm + 2 reminders (0 = unlimited) |
+| `timeRestrictions` | `{ kind: ENABLED_DURING | DISABLED_DURING, timeRestrictions: [{ start: { dayOfWeek, time }, end: { dayOfWeek, time } }] }`; `dayOfWeek` 0 = Sunday … 6 = Saturday, `time` `"HH:MM"` in the rule's timezone (both validated); each entry is one continuous window from start to end (Monday 08:00 to Friday 18:00 includes the nights), so business hours need one entry per day. Outside the window the action is skipped and logged as not executed |
 
-Rules without conditions (offline, schedule, zone) fire their actions on the trigger; keep `fireWhenConditionsBecomeHot: true` for them.
+Rules without conditions (offline, schedule, zone) run every action on every trigger; the `fireWhen…` flags, cooldown and execution limit are ignored there (verified with a schedule: an action with all three flags `false` still ran). Keep `fireWhenConditionsBecomeHot: true` anyway so the action keeps working if conditions are added later. Put the all-clear into its own action (`fireWhenConditionsBecomeCold` only): when one action fires on hot and cold, the cold execution and the next alarm both count towards `maxConsecutiveActionExecutions` and eat the reminders.
 
 Type-specific fields:
 
 | `kind` | Fields | Notes |
 |---|---|---|
-| `EMAIL` | `emailReceivers: [String]`, `emailSubject`, `emailBody` | body may contain HTML and template tags; branding from `whitelabelSiteId` |
-| `SMS` | `smsReceivers: [String]` (E.164), `smsBody` | needs organization SMS credits |
-| `PUSH` | `pushTitle`, `pushBody` (≤ 255 characters each), `pushRecipientIds: [user uuid]` from `pushRecipientCandidates` | Datacake mobile app only; needs Datacake branding or a white label brand with mobile push. Members who leave the workspace are dropped silently |
-| `WEBHOOK` | `webhookUrl`, `webhookHeaders: [{ key, value }]`, `webhookPayload` (string; usually a JSON template) | one HTTP POST per execution; the response is recorded in the log |
+| `EMAIL` | `emailReceivers: [String]`, `emailSubject` (required), `emailBody` | body may contain HTML and template expressions; addresses are validated, an empty receiver list is accepted; branding from `whitelabelSiteId` |
+| `SMS` | `smsReceivers: [String]` (E.164, validated), `smsBody` | needs organization SMS credits |
+| `PUSH` | `pushTitle`, `pushBody` (≤ 255 characters each), `pushRecipientIds: [user uuid]` from `pushRecipientCandidates` | Datacake mobile app only; needs Datacake branding or a white label brand with mobile push. Unknown recipient ids and members who leave the workspace are dropped silently; the log counts `push_sent_count` and `push_skipped_no_token_count` |
+| `WEBHOOK` | `webhookUrl`, `webhookHeaders: [{ key, value }]`, `webhookPayload` (string; usually a JSON template) | one HTTP POST per execution; header values are templates too. The URL scheme is not validated at creation; hosts that do not resolve (or are not allowed) are refused at execution with `webhook_error_code: HOST_NOT_ALLOWED` in the log |
 | `SINGLE_DEVICE_DOWNLINK` | `singleDeviceDownlinkId` (a downlink of the rule's product), optional `singleDeviceDownlinkDeviceId` | omit the device id to target the triggering device (schedule on `DEVICE_LEVEL` = every device gets its downlink) |
 | `MULTI_DEVICE_DOWNLINK` | `multiDeviceDownlinkProductId`, `multiDeviceDownlinkId`, `multiDeviceDownlinkTagsFilter`, `multiDeviceDownlinkTagsFilterConjunction` (`AND`/`OR`) | downlink to every device of another product (optionally filtered by tags), e.g. when an outdoor sensor triggers |
-| `SET_VALUE` | `setValueFieldId`, optional `setValueDeviceId`, exactly one of `setValueNumeric`, `setValueBool`, `setValueString`, `setValueGeo` (`"(lat,lng)"`) | writes a datapoint (publishes MQTT, can trigger other rules); omit the device id for the triggering device. `setValueFloat`/`setValueInt` are deprecated |
+| `SET_VALUE` | `setValueFieldId`, optional `setValueDeviceId`, exactly one of `setValueNumeric`, `setValueBool`, `setValueString`, `setValueGeo` (`"(lat,lng)"`) | writes a datapoint (publishes MQTT, can trigger other rules); omit the device id for the triggering device. The value must match the field type (`setValueBool` on a number field fails with "Value to be set must be set"), strings are written verbatim (no template rendering), a set value on a field that triggers the same rule is refused ("Possible loop"). `setValueFloat`/`setValueInt` are deprecated |
 
 ## Create a rule
 
-`createRuleNG(workspaceId: UUID!, input: CreateRuleNGInputType!)`. `name` is the only required field; everything else defaults to off/empty. The example creates a product-level CO₂ alarm with an all-clear email and a webhook (the input is written inline so it validates against the schema; in code pass it as the `$input` variable):
+`createRuleNG(workspaceId: UUID!, input: CreateRuleNGInputType!)`. `name` is the only required field; everything else defaults to off/empty (verified defaults: `executionMode` `DEVICE_LEVEL`, `timezone` `UTC`). Input problems return `ok: false` with `error { code: VALIDATION_ERROR, details: [...] }`, a list of messages such as "Invalid crontab", "Invalid timezone", "A tags filter conjunction must be set when using the tags filter", "Condition IDs must be unique", "Email subject must be set for email actions"; scalar violations (a condition `id` that is not a UUID, a bad `setValueGeo`) fail earlier as GraphQL `errors` with HTTP 400. The example creates a product-level CO₂ alarm with an all-clear email and a webhook (the input is written inline so it validates against the schema; in code pass it as the `$input` variable):
 
 ```graphql
 mutation CreateRule($workspaceId: UUID!) {
@@ -330,7 +336,7 @@ The same payload as a variables document, in the shape `scripts/rules.py create 
 }
 ```
 
-Checklist before sending: `productFilterId` set for device-level triggers · field ids belong to that product · every condition has a fresh UUID `id` and `hysteresis` is a number · each action has all three `fireWhen…` flags · `executionMode` explicit · `timezone` set when a schedule is used · `ok` checked and `error { code details }` surfaced (`details` usually names the offending field).
+Checklist before sending: `productFilterId` set for device-level triggers · field ids belong to that product · every condition has a fresh UUID `id`, `hysteresis` only on static number/range operands · each action has all three `fireWhen…` flags · templates use only `{{ }}` with the filters `round`, `datetime`, `json` · `executionMode` explicit · `timezone` set when a schedule is used · `ok` checked and `error { code details }` surfaced (`details` usually names the offending field).
 
 ## Update a rule
 
@@ -338,13 +344,13 @@ Checklist before sending: `productFilterId` set for device-level triggers · fie
 
 | Field | Update semantics |
 |---|---|
-| `devicesFilterIds` | object `{ set: [...] }` (replace), `{ add: [...] }`, `{ remove: [...] }` |
+| `devicesFilterIds` | object `{ set: [...] }` (replace), `{ add: [...] }`, `{ remove: [...] }` (all verified); `{ set: [] }` without a product fails while a condition still references the triggering device |
 | `triggeringMeasurementFields` | same `{ set | add | remove }` object |
 | `conditions` | replaces the whole list; send every condition you want to keep (with its existing `id`) |
 | `createActions` | adds actions (no `id`) |
-| `updateActions` | each entry needs the existing action `id`; only the given fields change |
-| `deleteActions` | list of action ids to remove |
-| `productFilterId`, `whitelabelSiteId` | `BlankableUUID`: `""` clears |
+| `updateActions` | each entry needs the existing action `id`; only the given fields change (verified); an unknown id is a GraphQL error |
+| `deleteActions` | list of action ids to remove (unknown ids are ignored) |
+| `productFilterId`, `whitelabelSiteId` | `BlankableUUID`: `""` clears (verified; the devices in `devicesFilterIds` stay) |
 
 ```graphql
 mutation UpdateRule($id: UUID!) {
@@ -384,30 +390,35 @@ Deleting removes the rule with its conditions and actions; there is no undo and 
 
 ## Template language (email, SMS, push, webhook)
 
-Subjects, bodies, push texts and webhook payloads are rendered with the Django Template Language: `{{ variable }}`, filters with `|`, tags such as `{% if %}…{% else %}…{% endif %}` and `{% for %}`. Keys are accessed with brackets, single or double quotes: `{{ triggering_device['name'] }}` equals `{{ triggering_device["name"] }}`. Measurement keys are the field identifiers (`fieldName`), not the display names.
+Subjects, bodies, push texts, webhook payloads and webhook header values are rendered by a small expression substitution, not by Django or Jinja: only `{{ expression }}` is evaluated. Keys are accessed with brackets (single or double quotes) or dots: `{{ triggering_device['name'] }}`, `{{ triggering_device["name"] }}` and `{{ triggering_device.name }}` are equivalent. Measurement keys are the field identifiers (`fieldName`), not the display names. Simple arithmetic works (`{{ triggering_device['measurements']['TEMPERATURE'] * 2 }}`).
 
-Variables (as offered by the portal's autocomplete):
+Verified limits:
+
+- `{% if %}`, `{% for %}` and other tags are not interpreted; they stay in the text verbatim (expressions inside them still render).
+- Only the filters `round`, `datetime` and `json` exist. Any other filter (`default`, `floatformat`, `upper`, `int`, `default:"x"` …) or a filter applied to the wrong type (`round` on a string) aborts the rendering of that text: the whole subject, body or payload is sent unrendered, `{{ … }}` included. Subject and body are rendered separately, so a broken body still gets a rendered subject. `datetime` on a number renders empty instead of aborting.
+- Undefined variables and missing keys render as an empty string, never as an error.
+- `measurements` and `timestamps` are lazy containers: `{{ triggering_device['measurements']['CO2'] }}` works, but `{{ triggering_device['measurements'] }}`, `| json` on the container or iterating it yields `{}`.
+- `triggering_device['values']` does not exist (renders empty); use `measurements`.
+
+Variables (as offered by the portal's autocomplete; values render in Python style: `True`/`False`, `['a', 'b']`, datetimes as `2026-09-23 12:14:59.052383+00:00`):
 
 | Variable | Keys | Available when |
 |---|---|---|
 | `rule` | `id`, `name` | always |
-| `triggering_device` | `id`, `name`, `serial_number`, `location`, `tags`, `online`, `last_heard`, `dashboard_url`, `measurements[<FIELD>]` (latest value), `timestamps[<FIELD>]` (UTC ISO string of that value) | `DEVICE_LEVEL` |
-| `devices["<device uuid>"]` | same keys as `triggering_device` | any mode; any device of the workspace (the basis for `SYSTEM_LEVEL` reports) |
-| `triggering_gateway` | `id`, `name`, `eui`, `online`, `last_seen`, `last_check`, `connected_at`, `round_trip_median_time`, `uplink_count`, `downlink_count`, `latitude`, `longitude`, `altitude` | `GATEWAY_LEVEL` |
+| `triggering_device` | `id`, `name`, `serial_number`, `location` (the device's location *name*, not coordinates), `tags` (list), `online`, `last_heard` (datetime), `dashboard_url` (was empty in the test workspace), `measurements[<FIELD>]` (latest value; geo fields as `"(lat,lng)"`), `timestamps[<FIELD>]` (datetime of that value) | `DEVICE_LEVEL` (renders empty elsewhere) |
+| `devices["<device uuid>"]` | same keys as `triggering_device` | any mode; any device of the workspace (the basis for `SYSTEM_LEVEL` reports; verified in `DEVICE_LEVEL` and `SYSTEM_LEVEL`) |
+| `triggering_gateway` | `id`, `name`, `eui`, `online`, `last_seen`, `last_check`, `connected_at`, `round_trip_median_time`, `uplink_count`, `downlink_count`, `latitude`, `longitude`, `altitude` | `GATEWAY_LEVEL` (renders `{}` elsewhere) |
 | `gateways["<gateway uuid>"]` | same keys as `triggering_gateway` | any mode |
-| `triggering_zone` | `id`, `name`, `entered_at`, `exited_at`, `length_of_stay`, `still_in_zone_at` | zone triggers |
+| `triggering_zone` | `id`, `name`, `entered_at`, `exited_at`, `length_of_stay`, `still_in_zone_at` | zone triggers (empty elsewhere) |
 
-`triggering_device['values'][<FIELD>]` is an accepted alias of `measurements` in older docs; prefer `measurements`.
-
-Filters:
+Filters (chaining works: `| round(2) | json`):
 
 | Filter | Effect |
 |---|---|
-| `\| datetime` | timestamp in the rule's `timezone`, default format |
+| `\| datetime` | timestamp in the rule's `timezone`, default format `2026-09-23 14:08:27` |
 | `\| datetime("%d.%m.%Y %H:%M")` | strftime format |
-| `\| round(2)` | numeric value with two decimals |
-| `\| json` | JSON literal (`true`/`false`, quoted strings, lists) for webhook payloads |
-| Django built-ins | `\| default:"n/a"`, `\| floatformat:1`, `\| upper`, `\| date:"c"`, `\| timesince` |
+| `\| round` / `\| round(2)` | numeric value rounded (`6.0`, `6.73`); on a string it aborts the rendering |
+| `\| json` | JSON literal (`true`/`false`, quoted strings, `["a", "b"]`) for webhook payloads and anything that must not look like Python |
 
 Examples:
 
@@ -417,9 +428,10 @@ Body:
 {{ triggering_device['name'] }} ({{ triggering_device['serial_number'] }}) reported
 {{ triggering_device['measurements']['TEMPERATURE'] | round(2) }} °C
 at {{ triggering_device['timestamps']['TEMPERATURE'] | datetime("%d.%m.%Y %H:%M") }}.
-{% if triggering_device['measurements']['TEMPERATURE'] > 30 %}Too warm.{% else %}Back to normal.{% endif %}
 Dashboard: {{ triggering_device['dashboard_url'] }}
 ```
+
+Conditional wording (`{% if %}`) is not available: express the cases through the rule instead, e.g. the all-clear as a separate `fireWhenConditionsBecomeCold` action with its own text, or two rules with different thresholds.
 
 Webhook payload (a JSON template: strings quoted, numbers raw, booleans and lists through `| json`):
 
@@ -435,7 +447,7 @@ Webhook payload (a JSON template: strings quoted, numbers raw, booleans and list
 }
 ```
 
-Discovering keys: add `"debug": "{{ triggering_device }}"` to a webhook payload or email body once, read the rendered object in the log or the received request, then remove it. The execution log also stores the full template context in `runtimeVariables` and `extraTemplateVariables`. In `SYSTEM_LEVEL` there is no `triggering_device`; address devices explicitly with `devices["<uuid>"]`.
+Discovering keys: put `{{ triggering_device }}` into an email body once and read the rendered object in the log (`actionExecutionVariables` → `email_body`); it shows every key except the lazy `measurements`/`timestamps`. In `SYSTEM_LEVEL` there is no `triggering_device` (renders empty); address devices explicitly with `devices["<uuid>"]`.
 
 ## Execution logs
 
@@ -467,11 +479,11 @@ query RuleLogs($id: UUID!, $after: String, $since: DateTime!) {
 }
 ```
 
-- Filter: `triggerTimestamp { gt gte lt lte }`, `anyActionFired { exact }`, `triggeringDeviceId { exact }`, `triggeringGatewayId { exact }`, combinable with `and`, `or`, `not`.
+- Filter: `triggerTimestamp { gt gte lt lte }`, `anyActionFired { exact }`, `triggeringDeviceId { exact }`, `triggeringGatewayId { exact }`, combinable with `and`, `or`, `not` (verified, e.g. `{ not: { anyActionFired: { exact: true } } }`). Entries come newest first; page with `after: endCursor`.
 - `initiator` is the trigger (`NEW_MEASUREMENTS`, `SCHEDULE`, `DEVICE_GOES_OFFLINE`, …); `actionFiringEvent` is `CONDITIONS_BECOME_HOT`, `CONDITIONS_STAY_HOT`, `CONDITIONS_BECOME_COLD` or `NONE`.
-- `conditionsPrettyEvaluationTrace` shows each operand's value and the result; `prettyTrace` per action explains why it fired or was skipped (cooldown, limit, time restriction, `isWithinActiveTimePeriod`).
-- `runtimeVariables`, `conditionsEvaluationVariables`, `actionExecutionVariables`, `extraTemplateVariables` are `JSONString`s: parse them; they hold the template context and per-action results.
-- `python3 scripts/rules.py logs <rule-id> [--since 24h] [--fired]` prints a table.
+- `conditionsPrettyEvaluationTrace` is a text table with each operand's value and result (`Skipped`/`Aborted` for short-circuited conditions, `(+/-1.0 hysteresis)` while a hysteresis is active). `prettyTrace` per action is filled only when the action ran: rendered subject/body and per-receiver send status for email, title/body and sent/skipped counts for push, `**Error:** HOST_NOT_ALLOWED …` for a refused webhook, `Set \`WARNING=True\` … on …` for a set value. A skipped action has an empty `prettyTrace`; read `isFiredByEvent`, `isWithinActiveTimePeriod` and its entry in `actionExecutionVariables` (`number_of_consecutive_action_executions`) to see why.
+- `conditionsEvaluationVariables` (one JSON string per condition: `result`, `last_result`, `runtime_variables` with `left_operand_value`, `right_operand_value`, `active_hysteresis`) and `actionExecutionVariables` (one per action, same order as `actionExecutionLogEntries`: flags and limits, `is_fired`, `runtime_variables` with `email_subject`, `email_body`, `email_receivers` as `[address, status]` pairs, `push_sent_count`, `push_skipped_no_token_count`, `webhook_error_code`/`webhook_error_details`, `number_of_consecutive_action_executions`) are `JSONString`s: parse them. `runtimeVariables` and `extraTemplateVariables` were empty objects in every test entry.
+- `python3 scripts/rules.py logs <rule-id> [--since 24h] [--fired] [--device <uuid>] [--trace]` prints a table; `--trace` adds the condition table and the per-action variables.
 
 ## Recipes
 
@@ -496,7 +508,7 @@ Offline alarm for every device of a product:
 
 Create a second rule with `triggerOnDeviceGoesOnline: true` for the all-clear (offline and online are separate triggers, not hot/cold states of one condition). With 50 devices offline you get 50 mails; a digest needs your own code on top of `devicesFiltered(online: false) { total }`.
 
-Threshold with hysteresis, reminder every hour at most three times, all-clear mail:
+Threshold with hysteresis, alarm plus up to two reminders (three executions), one reminder per hour at most, all-clear mail from a separate action:
 
 ```json CreateRuleNGActionInputType[]
 [
@@ -531,11 +543,11 @@ Per-device threshold from a configuration field (one rule, different setpoints p
 [
   { "id": "<uuid v4>", "description": "above target", "conjunction": "AND", "kind": "GREATER_THAN",
     "leftOperand": { "kind": "TRIGGERING_DEVICE_FIELD_VALUE", "fieldId": "<TEMPERATURE field uuid>" },
-    "rightOperand": { "kind": "DYNAMIC_CONFIGURATION_FIELD_VALUE", "fieldId": "<TARGET_TEMPERATURE configuration field uuid>", "hysteresis": 0 } }
+    "rightOperand": { "kind": "DYNAMIC_CONFIGURATION_FIELD_VALUE", "fieldId": "<TARGET_TEMPERATURE configuration field uuid>" } }
 ]
 ```
 
-Missing data: no datapoint in the last 2 hours (`COUNT` over the window equals 0, evaluated by a device-level schedule every 30 minutes; complements the offline trigger when the online timeout is long):
+Missing data: no datapoint in the last 2 hours (`COUNT` over the window equals 0, evaluated by a device-level schedule every 30 minutes; complements the offline trigger when the online timeout is long). The condition stays hot while data is missing, so the push goes out once on the first empty window; add `fireWhenConditionsStayHot: true` with `minSecondsBetweenHotConditions` for reminders:
 
 ```json CreateRuleNGInputType
 {
@@ -556,7 +568,7 @@ Missing data: no datapoint in the last 2 hours (`COUNT` over the window equals 0
 }
 ```
 
-Daily summary at 07:00 from fixed devices (`SYSTEM_LEVEL`, one email):
+Daily summary at 07:00 from fixed devices (`SYSTEM_LEVEL`, one email; without conditions the action runs on every tick, flags and limits are ignored):
 
 ```json CreateRuleNGInputType
 {
@@ -626,18 +638,21 @@ Zone entry push with a night-time restriction (push only between 22:00 and 06:00
 
 - Field ids, not identifiers: `fieldId`, `triggeringMeasurementFields` and `setValueFieldId` take the `ProductMeasurementFieldType.id` UUID; templates use the `fieldName` identifier. Mixing them up yields an error or a rule that never matches.
 - `tagsFilterConjunction` (and the zone and multi-downlink variants) is the string `"AND"` or `"OR"`; leave it `""` when no tags are set.
-- `hysteresis` must be a number (`0`), not `null`; `TRIGGERING_DEVICE_FIELD_VALUE` operands must not carry a `deviceId`; condition `id`s are generated by the client (UUID v4) and must be unique within the rule.
-- A measurement trigger without conditions fires on every stored value of the product, multiplied by the number of actions.
+- `hysteresis` belongs to `STATIC_NUMBER_VALUE`/`STATIC_RANGE_VALUE` only (send `0`, never `null`; drop it from dynamic, boolean and string operands); `TRIGGERING_DEVICE_FIELD_VALUE` operands must not carry a `deviceId`; condition `id`s are generated by the client (UUID v4) and must be unique within the rule.
+- A measurement trigger without conditions runs every action on every stored value of the triggering fields; fire flags, cooldown and limits are ignored without conditions.
+- Unknown ids in `devicesFilterIds`, `triggeringMeasurementFields`, `pushRecipientIds` and `deleteActions` are dropped without an error; read the rule back after writing it.
+- Only `{{ }}` expressions with the filters `round`, `datetime` and `json` render; an unknown filter leaves the whole text unrendered and `{% %}` tags are printed verbatim.
+- One action that fires on hot and cold shares one execution counter; use separate actions for alarm/reminders and for the all-clear.
 - `executionMode` defaults to `DEVICE_LEVEL`; a schedule on a product with many devices then runs once per device. Use `SYSTEM_LEVEL` for one summary and `devices["<uuid>"]` in the template.
 - Cron expressions run in the rule's `timezone`; the workspace has no time zone. `datetime` renders in the same zone; raw `timestamps` are UTC.
 - Time-range windows must be longer than the send interval; `MIN`/`MAX`/`COUNT` over a window shorter than one uplink see zero or one value.
 - `fireWhenConditionsStayHot: true` without `minSecondsBetweenHotConditions` or `maxConsecutiveActionExecutions` sends one message per uplink while the condition holds.
 - Time restrictions skip the action, they do not delay it: an alarm at 07:59 outside an 08:00 window is not sent at 08:00.
 - Push needs Datacake branding or a white label brand with mobile push; the portal hides the action otherwise, so create push actions only under such a branding. Titles and bodies are limited to 255 characters.
-- `SET_VALUE` writes a datapoint like any device uplink: it counts against the plan, publishes on MQTT and can trigger other rules (loops are possible).
+- `SET_VALUE` writes a datapoint like any device uplink: it counts against the plan, publishes on MQTT and can trigger other rules. Writing to a field that triggers the same rule is refused (`VALIDATION_ERROR` "Possible loop"); loops across rules are still possible. Set-value strings are not templates.
 - Rules are not moved with devices (`createDeviceMoveRequest`); recreate them in the target workspace with `rules.py export` / `create`.
-- Portal copy and paste uses a clipboard JSON with `productId` instead of `productFilterId` and `updateActions` entries with ids; convert it into a `CreateRuleNGInputType` (`rules.py create` accepts both spellings).
-- `tryWebhook` takes legacy rule ids; test NG webhooks with a rule that targets one test device, then read `actionExecutionLogEntries`.
+- Portal copy and paste puts the rule form's values on the clipboard: `productFilterId`, conditions with their ids, existing actions under `updateActions` with ids, plus `createActions`/`deleteActions`. `rules.py create` converts that into a `CreateRuleNGInputType` (ids stripped; `productId` accepted as an alias).
+- `tryWebhook` takes legacy rule ids; test NG webhooks with a rule that targets one test device, then read `actionExecutionVariables` (`webhook_error_code`, e.g. `HOST_NOT_ALLOWED` for hosts that do not resolve).
 
 ## Legacy rules
 
