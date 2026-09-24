@@ -79,7 +79,7 @@ query RuleBuildingBlocks($workspaceId: String!, $productId: String!, $tags: Filt
 ```
 
 - `$tags` is `{ "contains": ["floor-1"] }` (all tags) or `null` for every device. One field by identifier: `product(id: $productId) { measurementField(fieldName: "CO2") { id } }`; one configuration field: `configurationField(fieldName: "TARGET_TEMPERATURE") { id }`.
-- `python3 scripts/discover.py <workspace>` prints the field ids next to the identifiers, plus product downlinks; `python3 scripts/rules.py ids <workspace> --product <name>` prints only the rule building blocks.
+- `python3 scripts/discover.py <workspace>` prints the field ids next to the identifiers, plus product downlinks; `python3 scripts/rules.py ids <workspace> --product <name>` prints only the rule building blocks. `apiConfiguration.apiDownlinks` already contains MQTT-kind downlinks (`kind: MQTT | HTTP`); `mqttDownlinks` repeats them under the same id. A product without downlinks needs one first (`createApiDownlink` / `createMqttDownlink`, see `mutations.md`).
 - `pushRecipientCandidates(forWhitelabelSiteId:)` filters recipients for a white label brand; `reachable: false` means the member has not signed in to the app yet (still selectable).
 - Devices in `devicesFilterIds` must belong to the product in `productFilterId`. Unknown or foreign ids in `devicesFilterIds`, `triggeringMeasurementFields` and `pushRecipientIds` are dropped silently (the rule is created with the remaining ids, or an empty list), so read the rule back after creating it. A random `fieldId` in a condition fails with a generic GraphQL error ("An unexpected error occurred"), not with `VALIDATION_ERROR`.
 
@@ -238,10 +238,20 @@ Type-specific fields:
 | `EMAIL` | `emailReceivers: [String]`, `emailSubject` (required), `emailBody` | body may contain HTML and template expressions; addresses are validated, an empty receiver list is accepted; branding from `whitelabelSiteId` |
 | `SMS` | `smsReceivers: [String]` (E.164, validated), `smsBody` | needs organization SMS credits |
 | `PUSH` | `pushTitle`, `pushBody` (≤ 255 characters each), `pushRecipientIds: [user uuid]` from `pushRecipientCandidates` | Datacake mobile app only; needs Datacake branding or a white label brand with mobile push. Unknown recipient ids and members who leave the workspace are dropped silently; the log counts `push_sent_count` and `push_skipped_no_token_count` |
-| `WEBHOOK` | `webhookUrl`, `webhookHeaders: [{ key, value }]`, `webhookPayload` (string; usually a JSON template) | one HTTP POST per execution; header values are templates too. The URL scheme is not validated at creation; hosts that do not resolve (or are not allowed) are refused at execution with `webhook_error_code: HOST_NOT_ALLOWED` in the log |
-| `SINGLE_DEVICE_DOWNLINK` | `singleDeviceDownlinkId` (a downlink of the rule's product), optional `singleDeviceDownlinkDeviceId` | omit the device id to target the triggering device (schedule on `DEVICE_LEVEL` = every device gets its downlink) |
-| `MULTI_DEVICE_DOWNLINK` | `multiDeviceDownlinkProductId`, `multiDeviceDownlinkId`, `multiDeviceDownlinkTagsFilter`, `multiDeviceDownlinkTagsFilterConjunction` (`AND`/`OR`) | downlink to every device of another product (optionally filtered by tags), e.g. when an outdoor sensor triggers |
+| `WEBHOOK` | `webhookUrl` (static, validated as a URL, query string allowed), `webhookHeaders: [{ key, value }]` (static, sent verbatim), `webhookPayload` (template; usually JSON) | always one HTTP `POST` per execution with `User-Agent: DatacakeBot/1.0`; no `Content-Type` is added, so set `Content-Type: application/json` yourself. Only the payload is rendered: URL and headers are not templates (a `{{ }}` in the URL fails validation, in a header it is sent literally). A payload that parses as JSON is re-serialized (pretty-printed) before sending, anything else is sent as-is. Request, response status/headers/body and `webhook_body_parsable_as_json` are logged; a 4xx/5xx response still counts as fired. Hosts that do not resolve (or are not allowed) fail with `webhook_error_code: HOST_NOT_ALLOWED`. Recipe: "Webhook to a third-party platform" below |
+| `SINGLE_DEVICE_DOWNLINK` | `singleDeviceDownlinkId` (a downlink of the rule's product), optional `singleDeviceDownlinkDeviceId` | omit the device id to target the triggering device (schedule on `DEVICE_LEVEL` = every device gets its downlink). Verified: the log records `single_downlink_id`, `single_downlink_device_id` and "Downlink … scheduled for device …"; an unknown downlink id fails with "Single device downlink action requires a downlink to be set" |
+| `MULTI_DEVICE_DOWNLINK` | `multiDeviceDownlinkProductId`, `multiDeviceDownlinkId`, `multiDeviceDownlinkTagsFilter`, `multiDeviceDownlinkTagsFilterConjunction` (`AND`/`OR`) | downlink to every device of another product (optionally filtered by tags), e.g. when an outdoor sensor triggers. Verified: the product is required ("Multi device downlink action requires a product to be set"), tags without a conjunction are accepted, the log lists the targeted devices in `multi_downlink_devices` as `[id, serial, name]` |
 | `SET_VALUE` | `setValueFieldId`, optional `setValueDeviceId`, exactly one of `setValueNumeric`, `setValueBool`, `setValueString`, `setValueGeo` (`"(lat,lng)"`) | writes a datapoint (publishes MQTT, can trigger other rules); omit the device id for the triggering device. The value must match the field type (`setValueBool` on a number field fails with "Value to be set must be set"), strings are written verbatim (no template rendering), a set value on a field that triggers the same rule is refused ("Possible loop"). `setValueFloat`/`setValueInt` are deprecated |
+
+Single vs multi device downlink (the most common misunderstanding): the two kinds answer different questions and multiply with the execution mode.
+
+| You want | Rule | Action | Downlinks per trigger |
+|---|---|---|---|
+| Every device of the product gets its own downlink (e.g. open all valves at 09:00) | `DEVICE_LEVEL`, schedule, product (optionally tags/devices) | `SINGLE_DEVICE_DOWNLINK` **without** `singleDeviceDownlinkDeviceId` (= the triggering device) | one per device in scope |
+| One trigger sends the downlink to a whole product (e.g. the outdoor sensor closes all valves of another product) | `DEVICE_LEVEL` on the sensor product, or `SYSTEM_LEVEL` schedule | `MULTI_DEVICE_DOWNLINK` with `multiDeviceDownlinkProductId` (+ tags) | one per target device, per trigger |
+| Wrong: "I have many devices, so multi" | `DEVICE_LEVEL` on product X | `MULTI_DEVICE_DOWNLINK` to product X | devices × devices: the rule runs once per device and each run sends to every device |
+
+`MULTI_DEVICE_DOWNLINK` ignores the triggering device entirely; it targets the product named in the action. Combine it with `DEVICE_LEVEL` only when the rule's product is a different one (sensor triggers, actuators receive) or when the rule's scope is one device. `rules.py create` warns about a multi downlink in a `DEVICE_LEVEL` rule. Verified: a `DEVICE_LEVEL` rule with one device in scope and a multi downlink to seven tagged devices scheduled seven downlinks per trigger.
 
 ## Create a rule
 
@@ -390,12 +400,12 @@ Deleting removes the rule with its conditions and actions; there is no undo and 
 
 ## Template language (email, SMS, push, webhook)
 
-Subjects, bodies, push texts, webhook payloads and webhook header values are rendered by a small expression substitution, not by Django or Jinja: only `{{ expression }}` is evaluated. Keys are accessed with brackets (single or double quotes) or dots: `{{ triggering_device['name'] }}`, `{{ triggering_device["name"] }}` and `{{ triggering_device.name }}` are equivalent. Measurement keys are the field identifiers (`fieldName`), not the display names. Simple arithmetic works (`{{ triggering_device['measurements']['TEMPERATURE'] * 2 }}`).
+Subjects, bodies, push texts and webhook payloads are rendered by a small expression substitution, not by Django or Jinja: only `{{ expression }}` is evaluated (webhook URLs and headers are never rendered). Keys are accessed with brackets (single or double quotes) or dots: `{{ triggering_device['name'] }}`, `{{ triggering_device["name"] }}` and `{{ triggering_device.name }}` are equivalent. Measurement keys are the field identifiers (`fieldName`), not the display names. Simple arithmetic works (`{{ triggering_device['measurements']['TEMPERATURE'] * 2 }}`).
 
 Verified limits:
 
 - `{% if %}`, `{% for %}` and other tags are not interpreted; they stay in the text verbatim (expressions inside them still render).
-- Only the filters `round`, `datetime` and `json` exist. Any other filter (`default`, `floatformat`, `upper`, `int`, `default:"x"` …) or a filter applied to the wrong type (`round` on a string) aborts the rendering of that text: the whole subject, body or payload is sent unrendered, `{{ … }}` included. Subject and body are rendered separately, so a broken body still gets a rendered subject. `datetime` on a number renders empty instead of aborting.
+- Only the filters `round`, `datetime` and `json` exist. Any other filter (`default`, `floatformat`, `upper`, `int`, `default:"x"` …), a filter applied to the wrong type (`round` on a string) or a parse error in an expression (for example `datetime(\"%H:%M\")` with escaped quotes inside a JSON payload; write `datetime('%H:%M')`) aborts the rendering of that text: the whole subject, body or payload is sent unrendered, `{{ … }}` included. The platform docs still list `date:"c"`, `timesince`, `if`/`for` tags and a `values` alias; none of them rendered in the live test. Subject and body are rendered separately, so a broken body still gets a rendered subject. `datetime` on a number renders empty instead of aborting.
 - Undefined variables and missing keys render as an empty string, never as an error.
 - `measurements` and `timestamps` are lazy containers: `{{ triggering_device['measurements']['CO2'] }}` works, but `{{ triggering_device['measurements'] }}`, `| json` on the container or iterating it yields `{}`.
 - `triggering_device['values']` does not exist (renders empty); use `measurements`.
@@ -418,7 +428,7 @@ Filters (chaining works: `| round(2) | json`):
 | `\| datetime` | timestamp in the rule's `timezone`, default format `2026-09-23 14:08:27` |
 | `\| datetime("%d.%m.%Y %H:%M")` | strftime format |
 | `\| round` / `\| round(2)` | numeric value rounded (`6.0`, `6.73`); on a string it aborts the rendering |
-| `\| json` | JSON literal (`true`/`false`, quoted strings, `["a", "b"]`) for webhook payloads and anything that must not look like Python |
+| `\| json` | JSON literal: `true`/`false`, strings quoted and escaped (`"Cold room 4"`), lists `["a", "b"]`, datetimes as ISO strings (`"2026-09-23T14:01:47.217906+00:00"`); use it for every string, boolean, list and timestamp inside a webhook payload |
 
 Examples:
 
@@ -482,7 +492,7 @@ query RuleLogs($id: UUID!, $after: String, $since: DateTime!) {
 - Filter: `triggerTimestamp { gt gte lt lte }`, `anyActionFired { exact }`, `triggeringDeviceId { exact }`, `triggeringGatewayId { exact }`, combinable with `and`, `or`, `not` (verified, e.g. `{ not: { anyActionFired: { exact: true } } }`). Entries come newest first; page with `after: endCursor`.
 - `initiator` is the trigger (`NEW_MEASUREMENTS`, `SCHEDULE`, `DEVICE_GOES_OFFLINE`, …); `actionFiringEvent` is `CONDITIONS_BECOME_HOT`, `CONDITIONS_STAY_HOT`, `CONDITIONS_BECOME_COLD` or `NONE`.
 - `conditionsPrettyEvaluationTrace` is a text table with each operand's value and result (`Skipped`/`Aborted` for short-circuited conditions, `(+/-1.0 hysteresis)` while a hysteresis is active). `prettyTrace` per action is filled only when the action ran: rendered subject/body and per-receiver send status for email, title/body and sent/skipped counts for push, `**Error:** HOST_NOT_ALLOWED …` for a refused webhook, `Set \`WARNING=True\` … on …` for a set value. A skipped action has an empty `prettyTrace`; read `isFiredByEvent`, `isWithinActiveTimePeriod` and its entry in `actionExecutionVariables` (`number_of_consecutive_action_executions`) to see why.
-- `conditionsEvaluationVariables` (one JSON string per condition: `result`, `last_result`, `runtime_variables` with `left_operand_value`, `right_operand_value`, `active_hysteresis`) and `actionExecutionVariables` (one per action, same order as `actionExecutionLogEntries`: flags and limits, `is_fired`, `runtime_variables` with `email_subject`, `email_body`, `email_receivers` as `[address, status]` pairs, `push_sent_count`, `push_skipped_no_token_count`, `webhook_error_code`/`webhook_error_details`, `number_of_consecutive_action_executions`) are `JSONString`s: parse them. `runtimeVariables` and `extraTemplateVariables` were empty objects in every test entry.
+- `conditionsEvaluationVariables` (one JSON string per condition: `result`, `last_result`, `runtime_variables` with `left_operand_value`, `right_operand_value`, `active_hysteresis`) and `actionExecutionVariables` (one per action, same order as `actionExecutionLogEntries`: flags and limits, `is_fired`, `runtime_variables` with `email_subject`, `email_body`, `email_receivers` as `[address, status]` pairs, `push_sent_count`, `push_skipped_no_token_count`, `webhook_body` (rendered payload), `webhook_request` (full request incl. headers), `webhook_response` (status line, headers, body), `webhook_body_parsable_as_json`, `webhook_error_code`/`webhook_error_details` (connection-level failures only), `single_downlink_message`, `multi_downlink_devices`, `number_of_consecutive_action_executions`) are `JSONString`s: parse them. `runtimeVariables` and `extraTemplateVariables` were empty objects in every test entry.
 - `python3 scripts/rules.py logs <rule-id> [--since 24h] [--fired] [--device <uuid>] [--trace]` prints a table; `--trace` adds the condition table and the per-action variables.
 
 ## Recipes
@@ -583,7 +593,7 @@ Daily summary at 07:00 from fixed devices (`SYSTEM_LEVEL`, one email; without co
 }
 ```
 
-Scheduled downlink to every device of a product (device-dependent scheduler, single-device downlink to the triggering device):
+Scheduled downlink to every device of a product (device-dependent scheduler, single-device downlink to the triggering device; a `MULTI_DEVICE_DOWNLINK` here would send devices × devices downlinks, see "Single vs multi device downlink" above):
 
 ```json CreateRuleNGInputType
 {
@@ -597,7 +607,7 @@ Scheduled downlink to every device of a product (device-dependent scheduler, sin
 }
 ```
 
-Outdoor sensor drives valves of another product (multi-device downlink) and sets an alarm flag on the sensor itself:
+Outdoor sensor drives valves of another product (multi-device downlink: the rule runs per sensor, the downlink goes to the valve product; correct because sensor and valves are different products) and sets an alarm flag on the sensor itself:
 
 ```json CreateRuleNGActionInputType[]
 [
@@ -610,6 +620,50 @@ Outdoor sensor drives valves of another product (multi-device downlink) and sets
     "fireWhenConditionsBecomeHot": false, "fireWhenConditionsStayHot": false, "fireWhenConditionsBecomeCold": true }
 ]
 ```
+
+Webhook to a third-party platform (Slack, Microsoft Teams, ticket systems, any REST API): the `WEBHOOK` action is a plain HTTP `POST` with a static URL, static headers and a templated body, so it reaches every service that accepts JSON over HTTPS. Slack incoming webhook (one channel post per alarm and an all-clear):
+
+```json CreateRuleNGActionInputType[]
+[
+  { "kind": "WEBHOOK", "description": "Slack alarm",
+    "webhookUrl": "https://hooks.slack.com/services/T000/B000/XXXX",
+    "webhookHeaders": [{ "key": "Content-Type", "value": "application/json" }],
+    "webhookPayload": "{\"text\": \":rotating_light: *{{ rule['name'] }}*\\n{{ triggering_device['name'] }} ({{ triggering_device['serial_number'] }}) reported {{ triggering_device['measurements']['TEMPERATURE'] | round(1) }} °C at {{ triggering_device['timestamps']['TEMPERATURE'] | datetime('%d.%m.%Y %H:%M') }}\"}",
+    "fireWhenConditionsBecomeHot": true, "fireWhenConditionsStayHot": false, "fireWhenConditionsBecomeCold": false,
+    "minSecondsBetweenHotConditions": 900, "maxConsecutiveActionExecutions": 0 },
+  { "kind": "WEBHOOK", "description": "Slack all clear",
+    "webhookUrl": "https://hooks.slack.com/services/T000/B000/XXXX",
+    "webhookHeaders": [{ "key": "Content-Type", "value": "application/json" }],
+    "webhookPayload": "{\"text\": \":white_check_mark: {{ triggering_device['name'] }} back to normal ({{ triggering_device['measurements']['TEMPERATURE'] | round(1) }} °C)\"}",
+    "fireWhenConditionsBecomeHot": false, "fireWhenConditionsStayHot": false, "fireWhenConditionsBecomeCold": true }
+]
+```
+
+Generic REST API with authentication and a structured body (a ticket system, an automation platform such as Zapier/Make/n8n, or your own backend):
+
+```json CreateRuleNGActionInputType[]
+[
+  { "kind": "WEBHOOK", "description": "Create ticket",
+    "webhookUrl": "https://api.example.com/v1/incidents?source=datacake",
+    "webhookHeaders": [
+      { "key": "Content-Type", "value": "application/json" },
+      { "key": "Authorization", "value": "Bearer <api token>" },
+      { "key": "X-Source", "value": "datacake-rule-engine" }
+    ],
+    "webhookPayload": "{\"title\": \"{{ rule['name'] }}: {{ triggering_device['name'] }}\", \"device_id\": \"{{ triggering_device['id'] }}\", \"serial\": {{ triggering_device['serial_number'] | json }}, \"temperature\": {{ triggering_device['measurements']['TEMPERATURE'] }}, \"door_open\": {{ triggering_device['measurements']['DOOR_OPENED'] | json }}, \"tags\": {{ triggering_device['tags'] | json }}, \"measured_at\": {{ triggering_device['timestamps']['TEMPERATURE'] | json }}, \"dashboard\": \"{{ triggering_device['dashboard_url'] }}\"}",
+    "fireWhenConditionsBecomeHot": true, "fireWhenConditionsStayHot": false, "fireWhenConditionsBecomeCold": false }
+]
+```
+
+Rules for webhook payloads (all verified live):
+
+- The request is always `POST`; there is no method, no basic-auth field and no retry setting. Put API keys into headers (`Authorization`, `X-Api-Key`); they are stored in plain text and visible to every member with the `rules` permission, so use a dedicated key with minimal rights.
+- Set `Content-Type: application/json` explicitly; Datacake adds only `User-Agent`, `Accept`, `Content-Length`. Microsoft Teams, Slack and most REST APIs reject bodies without it.
+- Quote string expressions yourself (`"{{ triggering_device['name'] }}"`) or use `| json` (also escapes quotes and newlines in the value); numbers go raw, booleans, lists and timestamps through `| json`. Inside the payload use single quotes for filter arguments (`datetime('%H:%M')`), because `\"` breaks the expression parser and the whole payload goes out unrendered.
+- Dynamic values belong in the body: the URL and the headers are static. Services that want an id in the path need one action per target or a body field the receiver evaluates.
+- A syntactically valid JSON payload is re-serialized (pretty-printed) before sending; the log's `webhook_body_parsable_as_json` and the `✓ JSON valid` / `✗ JSON invalid` line in `prettyTrace` tell you which case you hit. A `4xx`/`5xx` answer is logged in `webhook_response` but does not fail the action, so check the logs after the first execution.
+- Loop control is the same as for emails: cooldown and `maxConsecutiveActionExecutions` for reminders, a separate action with `fireWhenConditionsBecomeCold` for the all-clear. In `SYSTEM_LEVEL` address devices as `devices['<uuid>']`.
+- Legacy `tryWebhook` cannot test NG actions; trigger the rule once with a test device (or record a value via the REST endpoint) and read `rules.py logs <rule-id> --trace`.
 
 Zone entry push with a night-time restriction (push only between 22:00 and 06:00, Sunday to Saturday):
 
@@ -643,6 +697,7 @@ Zone entry push with a night-time restriction (push only between 22:00 and 06:00
 - Unknown ids in `devicesFilterIds`, `triggeringMeasurementFields`, `pushRecipientIds` and `deleteActions` are dropped without an error; read the rule back after writing it.
 - Only `{{ }}` expressions with the filters `round`, `datetime` and `json` render; an unknown filter leaves the whole text unrendered and `{% %}` tags are printed verbatim.
 - One action that fires on hot and cold shares one execution counter; use separate actions for alarm/reminders and for the all-clear.
+- `MULTI_DEVICE_DOWNLINK` in a `DEVICE_LEVEL` rule on the same product sends devices × devices downlinks; "every device gets its downlink" is `SINGLE_DEVICE_DOWNLINK` without a device id, "one batch to a product" is `MULTI_DEVICE_DOWNLINK` on `SYSTEM_LEVEL` or from another product's rule.
 - `executionMode` defaults to `DEVICE_LEVEL`; a schedule on a product with many devices then runs once per device. Use `SYSTEM_LEVEL` for one summary and `devices["<uuid>"]` in the template.
 - Cron expressions run in the rule's `timezone`; the workspace has no time zone. `datetime` renders in the same zone; raw `timestamps` are UTC.
 - Time-range windows must be longer than the send interval; `MIN`/`MAX`/`COUNT` over a window shorter than one uplink see zero or one value.
@@ -652,7 +707,7 @@ Zone entry push with a night-time restriction (push only between 22:00 and 06:00
 - `SET_VALUE` writes a datapoint like any device uplink: it counts against the plan, publishes on MQTT and can trigger other rules. Writing to a field that triggers the same rule is refused (`VALIDATION_ERROR` "Possible loop"); loops across rules are still possible. Set-value strings are not templates.
 - Rules are not moved with devices (`createDeviceMoveRequest`); recreate them in the target workspace with `rules.py export` / `create`.
 - Portal copy and paste puts the rule form's values on the clipboard: `productFilterId`, conditions with their ids, existing actions under `updateActions` with ids, plus `createActions`/`deleteActions`. `rules.py create` converts that into a `CreateRuleNGInputType` (ids stripped; `productId` accepted as an alias).
-- `tryWebhook` takes legacy rule ids; test NG webhooks with a rule that targets one test device, then read `actionExecutionVariables` (`webhook_error_code`, e.g. `HOST_NOT_ALLOWED` for hosts that do not resolve).
+- Webhook URL and headers are static (no templates), the request is always `POST` and no `Content-Type` is added by default; dynamic values go into the payload, filter arguments inside a JSON payload use single quotes. `tryWebhook` takes legacy rule ids; test NG webhooks by triggering the rule once and reading `actionExecutionVariables` (`webhook_request`, `webhook_response`, `webhook_error_code` such as `HOST_NOT_ALLOWED`).
 
 ## Legacy rules
 

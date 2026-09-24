@@ -60,7 +60,7 @@ query Discover($id: String, $slug: String, $pageSize: Int) {
       measurementFields { id fieldName verboseFieldName fieldType unit role semantic active useFormula }
       configurationFields { id fieldName verboseFieldName fieldType unit }
       lorawanDownlinks { id name fport }
-      apiConfiguration { apiDownlinks { id name } mqttDownlinks { id name } }
+      apiConfiguration { apiDownlinks { id name kind } mqttDownlinks { id name } }
     }
     devicesFiltered(page: 0, pageSize: $pageSize) {
       total
@@ -231,7 +231,10 @@ def main():
                 "%s (%s%s, id %s)" % (c["fieldName"], c["fieldType"], ", " + c["unit"] if c["unit"] else "", c["id"]) for c in cfg))
         api_cfg = p.get("apiConfiguration") or {}
         downlinks = [("lorawan", d) for d in p.get("lorawanDownlinks") or []]
-        downlinks += [("api", d) for d in api_cfg.get("apiDownlinks") or []] + [("mqtt", d) for d in api_cfg.get("mqttDownlinks") or []]
+        # apiDownlinks already lists MQTT-kind downlinks (ApiDownlinkType.kind); mqttDownlinks repeats them
+        downlinks += [((d.get("kind") or "api").lower(), d) for d in api_cfg.get("apiDownlinks") or []]
+        seen = {d["id"] for _, d in downlinks}
+        downlinks += [("mqtt", d) for d in api_cfg.get("mqttDownlinks") or [] if d["id"] not in seen]
         if downlinks:
             print("  downlinks: " + ", ".join(
                 "%s (%s%s, id %s)" % (d["name"], kind, ", fport %s" % d["fport"] if d.get("fport") is not None else "", d["id"])

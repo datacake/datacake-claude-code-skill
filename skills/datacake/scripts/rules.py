@@ -107,7 +107,7 @@ query RuleIds($id: String, $slug: String, $tags: FilteredDeviceListTagsFilterInp
       measurementFields(active: true) { id fieldName verboseFieldName fieldType unit }
       configurationFields { id fieldName fieldType unit }
       lorawanDownlinks { id name fport }
-      apiConfiguration { apiDownlinks { id name } mqttDownlinks { id name } }
+      apiConfiguration { apiDownlinks { id name kind } mqttDownlinks { id name } }
     }
     devicesFiltered(page: 0, pageSize: $pageSize, tags: $tags) {
       total
@@ -375,21 +375,57 @@ KNOWN_FILTERS = {"round", "datetime", "json"}
 
 def template_warnings(actions):
     """The rule engine renders only {{ }} expressions with the filters round, datetime and json (verified live):
-    an unknown filter leaves the whole text unrendered, {% %} tags are printed verbatim."""
+    an unknown filter or a parse error leaves the whole text unrendered, {% %} tags are printed verbatim,
+    webhook URLs and headers are never rendered."""
     out = []
     for a in actions or []:
+        label_base = a.get("description") or a.get("kind") or "action"
         texts = [(f, a.get(f)) for f in TEMPLATE_FIELDS if isinstance(a.get(f), str)]
-        texts += [("webhookHeaders", h.get("value")) for h in a.get("webhookHeaders") or [] if isinstance(h, dict) and isinstance(h.get("value"), str)]
         for field, text in texts:
-            label = "%s.%s" % (a.get("description") or a.get("kind") or "action", field)
+            label = "%s.%s" % (label_base, field)
             if "{%" in text:
                 out.append("%s: {%% %%} tags are not interpreted by the rule engine (they stay in the text)" % label)
             for expr in re.findall(r"{{(.*?)}}", text, re.S):
                 for filt in re.findall(r"\|\s*([A-Za-z_]+)", expr):
                     if filt not in KNOWN_FILTERS:
                         out.append("%s: unknown filter '%s' (only round, datetime, json exist); the whole text would be sent unrendered" % (label, filt))
+                if '\\"' in expr:
+                    out.append("%s: escaped double quotes inside {{ }} break the expression parser (whole text sent unrendered); use single quotes, e.g. datetime('%%H:%%M')" % label)
             if "['values']" in text or '["values"]' in text:
                 out.append("%s: 'values' is not a template key (renders empty); use 'measurements'" % label)
+        if a.get("kind") == "WEBHOOK" or a.get("webhookUrl") or a.get("webhookPayload"):
+            headers = [h for h in a.get("webhookHeaders") or [] if isinstance(h, dict)]
+            if "{{" in (a.get("webhookUrl") or ""):
+                out.append("%s.webhookUrl: URLs are not templates (validation rejects {{ }}); put dynamic values into the payload" % label_base)
+            if any("{{" in str(h.get("value", "")) for h in headers):
+                out.append("%s.webhookHeaders: header values are sent verbatim, {{ }} is not rendered there" % label_base)
+            payload = (a.get("webhookPayload") or "").strip()
+            if payload.startswith(("{", "[")):
+                if not any(str(h.get("key", "")).lower() == "content-type" for h in headers):
+                    out.append("%s: JSON payload without a Content-Type header; Datacake adds none, so set Content-Type: application/json" % label_base)
+                try:
+                    json.loads(re.sub(r"{{.*?}}", "0", payload, flags=re.S))
+                except ValueError as exc:
+                    out.append("%s.webhookPayload: not valid JSON once expressions are substituted (%s); quote string expressions or use | json" % (label_base, exc))
+    return out
+
+
+def downlink_warnings(execution_mode, product_id, actions):
+    """MULTI_DEVICE_DOWNLINK targets every device of a product on each execution; on a DEVICE_LEVEL rule that runs once per
+    device, so a multi downlink to the rule's own product sends devices x devices downlinks (a frequent misunderstanding)."""
+    out = []
+    mode = execution_mode or "DEVICE_LEVEL"
+    for a in actions or []:
+        if a.get("kind") != "MULTI_DEVICE_DOWNLINK" or mode != "DEVICE_LEVEL":
+            continue
+        target = a.get("multiDeviceDownlinkProductId")
+        label = a.get("description") or "MULTI_DEVICE_DOWNLINK"
+        if target and product_id and target == product_id:
+            out.append("%s: multi device downlink to the rule's own product in a DEVICE_LEVEL rule sends devices x devices downlinks; "
+                       "use SINGLE_DEVICE_DOWNLINK without a device id (one downlink per device) or SYSTEM_LEVEL (one batch)" % label)
+        else:
+            out.append("%s: DEVICE_LEVEL runs once per device in scope and each run sends the multi downlink to every device of product %s; "
+                       "intended only when the rule's devices are the triggers and product %s the receivers" % (label, target or "?", target or "?"))
     return out
 
 
@@ -546,7 +582,10 @@ def cmd_ids(api, args):
                 "%s %s (%s)" % (c["fieldName"], c["id"], c["fieldType"]) for c in cfg))
         downlinks = [("lorawan", d) for d in p.get("lorawanDownlinks") or []]
         api_cfg = p.get("apiConfiguration") or {}
-        downlinks += [("api", d) for d in api_cfg.get("apiDownlinks") or []] + [("mqtt", d) for d in api_cfg.get("mqttDownlinks") or []]
+        # apiDownlinks already lists MQTT-kind downlinks (ApiDownlinkType.kind); mqttDownlinks repeats them
+        downlinks += [((d.get("kind") or "api").lower(), d) for d in api_cfg.get("apiDownlinks") or []]
+        seen = {d["id"] for _, d in downlinks}
+        downlinks += [("mqtt", d) for d in api_cfg.get("mqttDownlinks") or [] if d["id"] not in seen]
         if downlinks:
             print("  downlinks (singleDeviceDownlinkId / multiDeviceDownlinkId): " + ", ".join(
                 "%s %s (%s%s)" % (d["name"], d["id"], kind, ", fport %s" % d["fport"] if d.get("fport") is not None else "") for kind, d in downlinks))
@@ -614,6 +653,7 @@ def cmd_create(api, args):
         warnings.append("no trigger enabled: the rule will never run")
     if not doc.get("createActions"):
         warnings.append("no actions: the rule does nothing")
+    warnings += downlink_warnings(doc.get("executionMode"), doc.get("productFilterId"), doc.get("createActions"))
     for w in warnings:
         print("  WARNING: %s" % w)
     if not args.execute:
@@ -634,7 +674,10 @@ def cmd_update(api, args):
     print("PLAN: update rule %s (%s) with:\n%s" % (rule["name"], rule["id"], json.dumps(doc, indent=2, ensure_ascii=False)))
     if doc.get("conditions") is not None:
         print("  note: 'conditions' replaces the complete condition list (%d -> %d)" % (len(rule.get("conditions") or []), len(doc["conditions"])))
-    for w in template_warnings(list(doc.get("createActions") or []) + list(doc.get("updateActions") or [])):
+    mode = doc.get("executionMode") or rule.get("executionMode")
+    product = doc.get("productFilterId") if "productFilterId" in doc else (rule.get("productFilter") or {}).get("id")
+    for w in template_warnings(list(doc.get("createActions") or []) + list(doc.get("updateActions") or [])) + \
+            downlink_warnings(mode, product, list(doc.get("createActions") or []) + list(doc.get("updateActions") or [])):
         print("  WARNING: %s" % w)
     if not args.execute:
         print("dry run: add --execute to apply")
