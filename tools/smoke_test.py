@@ -166,15 +166,16 @@ def main():
         print("   one=%s" % d["one"])
         print("   parseDate=%s rootOne=%s rootMany=%d" % (r["data"].get("parseDate"), r["data"].get("rootOne"), len(r["data"].get("rootMany") or [])))
 
-    # 5. history variants
-    variants = [("15m", {}), ("1h", {}), ("24h", {}), ("7d", {}), ("raw", {}), ("1h+locf", {"locf": True})]
+    # 5. history variants (resolution, aggregation, locf)
+    variants = [("15m", {}), ("1h", {}), ("1d", {}), ("7d", {}), ("raw", {}), ("1h+nolocf", {"locf": False}),
+                ("1d+LAST", {"aggregation": "LAST"}), ("1d+FIRST", {"aggregation": "FIRST"}), ("1h+MAX", {"aggregation": "MAX"})]
     for label, extra in variants:
         res = label.split("+")[0]
-        rng_start = now - timedelta(days=14 if res in ("24h", "7d") else 2)
-        r = gql("""query($id: String!, $f: [String], $s: String!, $e: String!, $res: String!, $locf: Boolean, $ndt: Boolean) {
-          device(deviceId: $id) { history(fields: $f, timerangestart: $s, timerangeend: $e, resolution: $res, locf: $locf, nodatathreshold: $ndt) } }""",
+        rng_start = now - timedelta(days=14 if res in ("1d", "7d") else 2)
+        r = gql("""query($id: String!, $f: [String], $s: String!, $e: String!, $res: String!, $locf: Boolean = true, $agg: DeviceHistoryAggregation = AVG) {
+          device(deviceId: $id) { history(fields: $f, timerangestart: $s, timerangeend: $e, resolution: $res, locf: $locf, aggregation: $agg) } }""",
                 {"id": dev["id"], "f": [fname], "s": rng_start.isoformat(), "e": now.isoformat(), "res": res,
-                 "locf": extra.get("locf"), "ndt": extra.get("nodatathreshold")}, token)
+                 "locf": extra.get("locf", True), "agg": extra.get("aggregation", "AVG")}, token)
         h = ((r.get("data") or {}).get("device") or {}).get("history")
         ok = isinstance(h, str) and not r.get("errors")
         rows = json.loads(h) if ok else None
@@ -184,12 +185,12 @@ def main():
         check("history resolution %s" % label, ok, note)
         shapes.setdefault("history", {})[label] = {"type": type(h).__name__, "rows": len(rows) if rows is not None else None, "sample": rows[:2] if rows else None, "errors": r.get("errors")}
 
-    # 6. historyNg / historyStats / dashboardData
+    # 6. historyStats
     r = gql("""query($id: String!, $s: DateTime!, $e: DateTime!) { device(deviceId: $id) {
-        historyNg(start: $s, end: $e, resolution: "1h") historyStats(start: $s, end: $e) } }""",
+        historyStats(start: $s, end: $e) } }""",
             {"id": dev["id"], "s": start.isoformat(), "e": now.isoformat()}, token)
     d = (r.get("data") or {}).get("device") or {}
-    for key in ("historyNg", "historyStats"):
+    for key in ("historyStats",):
         val = d.get(key)
         parsed = None
         try:

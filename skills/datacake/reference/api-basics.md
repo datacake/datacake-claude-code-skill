@@ -109,7 +109,7 @@ Bundled CLI (no dependencies): `python3 scripts/dc.py 'query { user { id } }'`, 
 
 ## Query techniques
 
-- Declare variables with the exact schema types: `workspace(id:)` takes `String`, `device(deviceId:)` takes `String`, semantic filters take `FieldSemantic`, `change(timeRangeStart:)` takes `DateTime!`, `history(timerangestart:)` takes `String`. Copy types from `reference/schema.graphql`.
+- Declare variables with the exact schema types: `workspace(id:)` takes `String`, `device(deviceId:)` takes `String`, semantic filters take `FieldSemantic`, `change(timeRangeStart:)` takes `DateTime!`, `history(timerangestart:)` takes `String!`, `history(aggregation:)` takes `DeviceHistoryAggregation`. Copy types from `reference/schema.graphql`.
 - Aliases let one request compute several KPIs or lists:
 
 ```graphql
@@ -192,7 +192,7 @@ query Zones($workspaceId: String!, $after: String) {
 | `ID` | string | Relay global ids on `Node` types (zones, exports, organizations); still usable in `zone(id:)` etc. |
 | `DateTime` | ISO 8601 string, e.g. `"2026-03-01T00:00:00Z"` or `"2026-03-01T00:00:00+02:00"` | returned values are UTC with offset `+00:00` |
 | `Date` | `"2026-03-01"` | |
-| `JSONString` | a JSON document **encoded as a string** | `history`, `historyNg`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards`, `sidebarConfig`, rule log variables. Parse it (`JSON.parse`, `json.loads`) before use; when sending, stringify first |
+| `JSONString` | a JSON document **encoded as a string** | `history`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards`, `sidebarConfig`, rule log variables. Parse it (`JSON.parse`, `json.loads`) before use; when sending, stringify first |
 | `LatLng` | object `{ "latitude": 52.5, "longitude": 13.4 }` | zone centers |
 | `LatLngString` | `"(52.5,13.4)"` | geo field values, set-value actions |
 | `GenericScalar` | any JSON value | error details, validation errors |
@@ -204,14 +204,14 @@ query Zones($workspaceId: String!, $after: String) {
 - The API speaks UTC. Timestamps you send without an offset are treated as UTC. Send explicit `Z` or offsets to avoid ambiguity.
 - Ranges are start-inclusive and end-exclusive: "March 2026" is `2026-03-01T00:00:00Z` to `2026-04-01T00:00:00Z`; "today" in Berlin is local midnight converted to UTC (`2026-03-10T23:00:00Z` to `2026-03-11T23:00:00Z` in winter).
 - Convert local boundaries to UTC in your code (`date-fns-tz`, `luxon`, Python `zoneinfo`) or let the API do it: `query { parseDate(date: "2026-03-11 00:00", timezone: "Europe/Berlin") }` returns the UTC `DateTime`.
-- `history(timerangestart:, timerangeend:)` arguments are `String`s in ISO format (offsets honoured); `change`/`sum`/`average`/`minimum`/`maximum` take `DateTime!`. An end in the future is accepted.
+- `history(timerangestart:, timerangeend:)` arguments are required `String`s in ISO format (offsets honoured); `change`/`sum`/`average`/`minimum`/`maximum` take `DateTime!`. An end in the future is accepted (`history` returns no buckets after the current time). History buckets sit on a UTC grid: `1d` buckets are UTC days, not local days.
 - Device timestamps: `lastHeard`, `DeviceCurrentMeasurementType.modified` (time of the latest value), `DeviceRoleFieldValue.datetime`.
 - Rules have their own `timezone` (schedule trigger and the `datetime` template filter); the workspace has none.
 
 ## Limits and performance
 
 - Documented write limit: 1 write per second per field on the REST record endpoint. Read rate limits are not published; be conservative: cache, batch KPIs with aliases, poll dashboards every 30 to 60 s, back off on HTTP 429/5xx.
-- Request cost grows with device count times selected fields. Rules of thumb: `pageSize` ≤ 50 for lists with measurements; never fetch `devices { history }` for many devices in one request; one `history` call per device and field group, with a resolution that keeps points per field under a few thousand (see `queries-measurements.md`).
+- Request cost grows with device count times selected fields. Rules of thumb: `pageSize` ≤ 50 for lists with measurements; never fetch `devices { history }` for many devices in one request; one `history` call per device and field group, with a resolution that stays within 1024 buckets (see `queries-measurements.md`).
 - Use platform aggregation (`aggregatedNumericSemanticValue`, `total`, `sum/average/minimum/maximum/change`) instead of downloading raw data to compute in the client.
 - Use Exports (`createManualExport`) for bulk historical dumps.
 - Timeouts: allow 60 s for history-heavy requests; typical device list requests answer in well under a second.
@@ -237,6 +237,11 @@ query Zones($workspaceId: String!, $after: String) {
 | `NOT_AUTHORIZED` on a mutation | missing workspace permission or device permission | check `workspace.myPermissions`, `device.myPermissions(workspace:)` |
 | `history` returns a string | it is a `JSONString` | parse it |
 | `history` empty (`"[]"`) | range outside retention, wrong or inactive identifiers, device silent in that window | check `product.measurementFields`, `lastHeard`, retention of the device plan |
+| A requested field is missing from the `history` rows | the field has no data in the whole range (left out, not `null`) | treat a missing key as "no data" |
+| `history` buckets are 30 minutes apart although another resolution was requested | invalid resolution (`"1M"`, `"30 minutes"`, `"RAW"`) silently falls back to `30m` | `raw` or `<n><s\|m\|h\|d\|w>` in lowercase |
+| `history` buckets have odd sizes (43 min, 8 h 34 min) and odd start times | more than 1024 buckets requested, the API coarsened them | coarser resolution or split the range (≤ 1024 buckets per request) |
+| Raw `history` starts later than `timerangestart` | raw data is capped at the most recent 31 days of the range (or retention) | request ≤ 31-day windows, or use an Export |
+| String or geo field is `null` in bucketed `history` | only `FIRST`/`LAST` produce values for non-numeric fields | `aggregation: LAST` |
 | Request very slow or times out | too many devices × measurements, `raw` resolution on a long range | paginate, coarser resolution, split requests |
 | Semantic value `null` | no field with that semantic on the device, or no data | assign semantics in field settings; handle `null` in UI |
 | `total` correct but `devices` short | pagination | iterate `page` |

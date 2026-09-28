@@ -3,7 +3,7 @@ name: datacake
 description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current and historical measurements, KPIs, cross-device aggregations and meter consumption, core mutations (device creation, data ingestion via REST/MQTT, downlinks), the Rule Engine NG (list, create and update rules, conditions, actions, notification templates, logs), and the administration model (organization admins, workspace members, invites, permissions, API users, white label sites, audit logs) for admin consoles and bulk onboarding. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, members, measurements, rules or alerts, LoRaWAN data in Datacake, or wants a dashboard, app, report, admin tool, alerting rule or integration on Datacake data.
 license: MIT
 metadata:
-  version: 0.3.1
+  version: 0.4.0
   api: https://api.datacake.co/graphql/
   docs: https://docs.datacake.de
 ---
@@ -95,12 +95,13 @@ query Current($deviceId: String!) {
 }
 ```
 
-History (returns a JSON **string**; parse it):
+History (returns a JSON **string**; parse it). `aggregation` decides how readings inside a bucket are combined (`AVG` default, `MIN`, `MAX`, `SUM`, `FIRST`, `LAST`); `LAST` per day gives meter readings at the end of each day:
 
 ```graphql
 query History($deviceId: String!) {
   device(deviceId: $deviceId) {
     history(fields: ["TEMPERATURE"], timerangestart: "2026-03-01T00:00:00Z", timerangeend: "2026-03-02T00:00:00Z", resolution: "15m")
+    meterReadings: history(fields: ["ACTIVE_ENERGY_IMPORT_KWH"], timerangestart: "2026-02-28T00:00:00Z", timerangeend: "2026-04-01T00:00:00Z", resolution: "1d", aggregation: LAST)
   }
 }
 ```
@@ -131,8 +132,9 @@ query Kpis($workspaceId: String!) {
 | How do I read a device's values? | Known product → `currentMeasurements(fieldNames: [...])` with hardcoded identifiers. Mixed products → `roleFields`. Cross-product KPIs/filters → semantics (`numericSemanticField`, `devicesFiltered(temperature: {...})`, `aggregatedNumericSemanticValue`). |
 | Which device list query? | `workspace.devicesFiltered` (filters, sorting, `total`, pages) for apps; `allDevices(inWorkspace:, searchTags:)` only for small fixed groups; `device(deviceId:)` for one device. |
 | Counts vs details? | Counts and aggregates come from `devicesFiltered { total, aggregated… }` without `devices`; add `devices` only with `pageSize`. |
-| Period statistics of one field? | `currentMeasurement(fieldName:) { average/minimum/maximum/sum/change(timeRangeStart, timeRangeEnd) }`, `historyStats`. Consumption from cumulative meters = `change`. |
-| Charts? | `history(fields, timerangestart, timerangeend, resolution)`; resolution in compact form only (`15m`, `1h`, `24h`, `7d`, `raw`; word forms fall back to auto): ≤48 h `5m`–`15m`, 7 d `1h`, 30 d `6h`–`24h`, 1 y `24h`–`7d`; `locf: true` for meters; values may be numeric strings. One request per device. |
+| Period statistics of one field? | `currentMeasurement(fieldName:) { average/minimum/maximum/sum/change(timeRangeStart, timeRangeEnd) }`, `historyStats`. Consumption KPI of one meter for one window = `change`. |
+| Consumption per day/week, energy overview across several meters? | `history(resolution: "1d", aggregation: LAST)` per meter (start one day early) = reading at the end of each day; consumption = differences of successive readings, then sum across meters. Adds up exactly, unlike summed `change()` windows (they miss the gaps between windows). Local days: `1h` + `LAST`, bucket before each local midnight. See `reference/queries-measurements.md`. |
+| Charts? | `history(fields, timerangestart, timerangeend, resolution, aggregation)`; resolution `raw` or `<n><s\|m\|h\|d\|w>` in lowercase (`15m`, `1h`, `1d`, `1w`; anything else silently becomes `30m`): ≤48 h `5m`–`15m`, 7 d `1h`, 30 d `6h`–`1d`, 1 y `1d`–`1w`. At most 1024 buckets (finer resolutions are coarsened to odd bucket sizes) and raw only for the most recent 31 days of the range: split longer requests. `locf` is on by default; buckets sit on a UTC grid (`1d` = UTC days). One request per device. |
 | Real-time? | No subscriptions: poll every 30–60 s, or bridge the MQTT broker (`dtck/<product_slug>/<device_id>/<FIELD>`) server-side. |
 | Bulk historical data? | Exports (`createManualExport`) or `scripts/history_to_csv.py`, not thousands of `history` calls. |
 | Alerts, notifications, scheduled downlinks? | Rule Engine NG: list with `workspace.rulesNG`, read with `ruleNG(id)`, write with `createRuleNG`/`updateRuleNG`; one product per rule, field/device/downlink UUIDs from `scripts/rules.py ids`, templates such as `{{ triggering_device['measurements']['CO2'] }}`, logs via `executionLogEntries`. All in `reference/rules-ng.md`. |
@@ -142,7 +144,7 @@ query Kpis($workspaceId: String!) {
 
 1. MUST paginate every device list (`pageSize` ≤ 50 with measurements, ≤ 100 for ids/names). NEVER compute KPIs by downloading all devices; use `aggregatedNumericSemanticValue`, `aggregatedBooleanSemanticCount`, `total`, `change/average/minimum/maximum`.
 2. Identifiers for `currentMeasurements`/`currentMeasurement`/`history`; semantics only in `devicesFiltered` filters, `numericSemanticField`/`booleanSemanticField` and aggregates. Both semantic field accessors return objects, so always select `{ value }`. There is no semantic history.
-3. `history`, `historyNg`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards` are `JSONString`: parse before use, stringify before sending.
+3. `history`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards` are `JSONString`: parse before use, stringify before sending. Time series come only from `history`; `historyNg` is an internal fork API, never use it.
 4. Times are UTC ISO 8601; ranges are start-inclusive, end-exclusive; convert local day/week/month boundaries (user's time zone) before querying; `change()` for "today" = local midnight → next local midnight.
 5. Run `scripts/discover.py` (or read `product.measurementFields`) once, then hardcode identifiers per product in a single module. Do not discover fields on every request.
 6. Tokens never reach browsers or app bundles: backend proxy / server components / httpOnly cookie, or an API user with least privilege. Never print or commit tokens.

@@ -123,7 +123,7 @@ Rules: every write goes through a server action that re-checks `ok` and surfaces
 | Purpose | KPI cards | Widgets | Queries |
 |---|---|---|---|
 | Environmental / indoor air quality | avg/max CO₂, avg temperature, avg humidity, rooms above 1000 ppm, offline count | per-floor cards (tag aliases), worst rooms table, 24 h CO₂ chart per room, comfort band indicator | `aggregatedNumericSemanticValue`, `devicesFiltered(co2: { gt })`, `history` per device |
-| Energy and meters | consumption today / yesterday / month vs last month, total power now, top consumers | per-meter table (`change` windows), daily bar chart from `history(locf: true)` deltas, cost estimate | `currentMeasurement(fieldName).change(...)`, `history` 24h buckets, `aggregatedNumericSemanticValue(POWER, SUM)` |
+| Energy and meters | consumption today / yesterday / month vs last month, total power now, top consumers | per-meter table (`change` windows), daily bar chart from deltas of `history(resolution: "1d", aggregation: LAST)` readings, cost estimate | `currentMeasurement(fieldName).change(...)`, `history` daily `LAST` buckets, `aggregatedNumericSemanticValue(POWER, SUM)` |
 | Asset tracking | devices in zones, entered/left today, moving vs idle, battery low | map with zones, event timeline, per-zone occupancy | `zones`, `devicesInZones`, `deviceZoneEvents`, `currentLocation` |
 | Fleet health / operations | online %, offline list, low battery, weak signal, silent > 24 h, over quota | status table with `lastHeard`, battery histogram, product breakdown | `devicesFiltered(online:false)`, `battery { lt }`, `signal { lt }`, `lastHeard { lt }`, `isOverQuota` |
 | Occupancy / people counting | occupied desks/rooms now, utilisation %, visitors today | floor plan or grid, hourly occupancy chart | boolean semantics counts, `PEOPLE_COUNT` `change`/`history` |
@@ -271,11 +271,12 @@ export function parseHistory(raw: string | null): HistoryRow[] {
 
 // recharts data: [{ t: Date, TEMPERATURE: 21.4, HUMIDITY: 48 }]
 export function toSeries(rows: HistoryRow[], fields: string[]) {
-  // bucket values may arrive as numeric strings; coerce
+  // older API versions sent averages as numeric strings; coerce
   return rows.map((r) => ({ t: new Date(r.time), ...Object.fromEntries(fields.map((f) => [f, r[f] == null ? null : Number(r[f])])) }));
 }
 
-// consumption bars from a cumulative meter series fetched with locf: true
+// consumption bars from a cumulative meter series fetched with aggregation: LAST (locf is on by default);
+// fetch one bucket before the first bar so the first bar gets a delta
 export function toDeltas(rows: HistoryRow[], field: string) {
   return rows.slice(1).map((r, i) => {
     const prev = Number(rows[i][field] ?? NaN), cur = Number(r[field] ?? NaN);

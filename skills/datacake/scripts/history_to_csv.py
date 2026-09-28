@@ -5,11 +5,17 @@ Usage:
   python3 scripts/history_to_csv.py --device <uuid> --fields TEMPERATURE,HUMIDITY \
       --start 2026-03-01 --end 2026-03-08 --resolution 1h --tz Europe/Berlin --out temp.csv
   python3 scripts/history_to_csv.py --workspace <uuid|slug> --tag meter --tag building-a \
-      --fields ACTIVE_ENERGY_IMPORT_KWH --start 2026-02-01 --end 2026-03-01 --resolution 24h --locf
+      --fields ACTIVE_ENERGY_IMPORT_KWH --start 2026-02-01 --end 2026-03-01 --resolution 1d --aggregation LAST
 
 Devices: repeat --device, or select by --workspace plus --tag (all tags must match; --any-tag for any).
 Times: ISO dates or datetimes; naive values are interpreted in --tz (default UTC), end is exclusive.
-Resolution: "raw" or compact bucket sizes "5m", "15m", "1h", "24h", "7d", "1w" (word forms like "30 minutes" fall back to auto).
+Resolution: "raw" or <number><s|m|h|d|w> in lowercase, e.g. "30s", "5m", "15m", "1h", "1d", "1w"
+  (the API silently replaces anything else by 30m, so the script rejects it).
+Aggregation per bucket: AVG (API default), MIN, MAX, SUM, FIRST, LAST; LAST gives meter readings at the
+  end of each bucket, FIRST the opening reading. Ignored for raw data.
+LOCF: on by default (as in the API); --no-locf leaves empty buckets empty.
+Long ranges are split into requests the API answers completely (raw: 30 days, bucketed: 1000 buckets,
+  split on the bucket grid), and LOCF values are carried across the splits.
 Output columns: time_utc, time_local, device_id, device_name, <one column per field>.
 Token: $DATACAKE_TOKEN or ~/.datacake/token. Standard library only (Python 3.9+).
 """
@@ -22,13 +28,22 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 ENDPOINT = "https://api.datacake.co/graphql/"
 TIMEOUT = 120          # long ranges at fine resolution can take a while
 PAUSE_BETWEEN_DEVICES = 0.2   # be gentle with the API when looping over many devices
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+RESOLUTION_RE = re.compile(r"^(\d+)([smhdw])$")
+UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+AGGREGATIONS = ("AVG", "MIN", "MAX", "SUM", "FIRST", "LAST")
+# API limits: raw returns only the most recent 31 days of a range, bucketed data at most 1024 buckets
+# (beyond that the buckets are coarsened to odd sizes). Stay below both with some margin.
+RAW_WINDOW = timedelta(days=30)
+MAX_BUCKETS = 1000
+# Buckets sit on a fixed UTC grid anchored at Monday 2000-01-03 (verified for 1h, 1d, 2d, 1w and odd sizes).
+GRID_ORIGIN = datetime(2000, 1, 3, tzinfo=timezone.utc)
 
 DEVICES_QUERY = """
 query Devices($id: String, $slug: String, $tags: FilteredDeviceListTagsFilterInput, $page: Int!) {
@@ -42,11 +57,13 @@ query Devices($id: String, $slug: String, $tags: FilteredDeviceListTagsFilterInp
 """
 
 HISTORY_QUERY = """
-query History($deviceId: String!, $fields: [String], $start: String!, $end: String!, $resolution: String!, $locf: Boolean) {
+query History($deviceId: String!, $fields: [String], $start: String!, $end: String!, $resolution: String!,
+              $locf: Boolean = true, $aggregation: DeviceHistoryAggregation = AVG) {
   device(deviceId: $deviceId) {
     id
     verboseName
-    history(fields: $fields, timerangestart: $start, timerangeend: $end, resolution: $resolution, locf: $locf)
+    history(fields: $fields, timerangestart: $start, timerangeend: $end, resolution: $resolution,
+            locf: $locf, aggregation: $aggregation)
   }
 }
 """
@@ -100,6 +117,31 @@ def parse_time(value, tz):
     return dt.astimezone(timezone.utc)
 
 
+def bucket_size(resolution):
+    """timedelta of one bucket, None for raw; exits on values the API would silently replace by 30m."""
+    if resolution == "raw":
+        return None
+    m = RESOLUTION_RE.match(resolution)
+    if not m or int(m.group(1)) == 0:
+        sys.exit("invalid --resolution %r: use raw or <number><s|m|h|d|w> in lowercase, e.g. 15m, 1h, 1d, 1w" % resolution)
+    return timedelta(seconds=int(m.group(1)) * UNIT_SECONDS[m.group(2)])
+
+
+def windows(start, end, bucket):
+    """Split [start, end) into requests within the API limits; bucketed splits fall on the bucket grid."""
+    step = RAW_WINDOW if bucket is None else bucket * MAX_BUCKETS
+    cur = start
+    while cur < end:
+        nxt = cur + step
+        if bucket is not None:
+            nxt = GRID_ORIGIN + ((nxt - GRID_ORIGIN) // bucket) * bucket
+            if nxt <= cur:
+                nxt = cur + bucket
+        nxt = min(nxt, end)
+        yield cur, nxt
+        cur = nxt
+
+
 def select_devices(args, tok):
     if args.device:
         return [{"id": d, "verboseName": None} for d in args.device]
@@ -132,9 +174,13 @@ def main():
     ap.add_argument("--fields", required=True, help="comma-separated field identifiers, e.g. TEMPERATURE,HUMIDITY")
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True, help="exclusive end")
-    ap.add_argument("--resolution", default="1h")
+    ap.add_argument("--resolution", default="1h", help="raw or <number><s|m|h|d|w>, e.g. 15m, 1h, 1d (default 1h)")
+    ap.add_argument("--aggregation", type=str.upper, choices=AGGREGATIONS,
+                    help="how readings inside a bucket are combined (API default AVG); LAST for meter readings")
     ap.add_argument("--tz", default="UTC", help="IANA zone for naive --start/--end and the time_local column")
-    ap.add_argument("--locf", action="store_true", help="carry the last value forward into empty buckets")
+    ap.add_argument("--locf", dest="locf", action="store_true", default=None,
+                    help="carry the last value forward into empty buckets (API default, kept for compatibility)")
+    ap.add_argument("--no-locf", dest="locf", action="store_false", help="leave empty buckets empty")
     ap.add_argument("--out", help="CSV path (default: stdout)")
     args = ap.parse_args()
 
@@ -146,31 +192,54 @@ def main():
     start, end = parse_time(args.start, tz), parse_time(args.end, tz)
     if end <= start:
         sys.exit("--end must be after --start")
+    bucket = bucket_size(args.resolution)
+    if bucket is None and args.aggregation:
+        sys.stderr.write("note: --aggregation is ignored for raw data\n")
+    carry = bucket is not None and args.locf is not False
+    chunks = list(windows(start, end, bucket))
     tok = token()
     devices = select_devices(args, tok)
     if not devices:
         sys.exit("no devices selected")
-    sys.stderr.write("fetching %d field(s) for %d device(s), %s -> %s, resolution %s\n" % (
-        len(fields), len(devices), start.isoformat(), end.isoformat(), args.resolution))
+    sys.stderr.write("fetching %d field(s) for %d device(s), %s -> %s, resolution %s%s, %d request(s) per device\n" % (
+        len(fields), len(devices), start.isoformat(), end.isoformat(), args.resolution,
+        ", aggregation " + args.aggregation if args.aggregation and bucket else "", len(chunks)))
 
     out = open(args.out, "w", newline="", encoding="utf-8") if args.out else sys.stdout
     writer = csv.writer(out)
     writer.writerow(["time_utc", "time_local", "device_id", "device_name"] + fields)
     rows_written = 0
     for i, dev in enumerate(devices):
-        data = gql(HISTORY_QUERY, {"deviceId": dev["id"], "fields": fields, "start": start.isoformat(),
-                                   "end": end.isoformat(), "resolution": args.resolution, "locf": args.locf}, tok)
-        d = data.get("device")
-        if not d:
+        name, count, last_seen, found = dev["verboseName"], 0, {}, True
+        for chunk_start, chunk_end in chunks:
+            variables = {"deviceId": dev["id"], "fields": fields, "start": chunk_start.isoformat(),
+                         "end": chunk_end.isoformat(), "resolution": args.resolution}
+            if args.locf is not None:
+                variables["locf"] = args.locf
+            if args.aggregation:
+                variables["aggregation"] = args.aggregation
+            d = gql(HISTORY_QUERY, variables, tok).get("device")
+            if not d:
+                found = False
+                break
+            name = d["verboseName"]
+            for row in json.loads(d["history"]) if d.get("history") else []:
+                values = []
+                for f in fields:
+                    v = row.get(f)
+                    if v is None and carry:
+                        v = last_seen.get(f)       # the API carries values forward only within one request
+                    elif v is not None:
+                        last_seen[f] = v
+                    values.append(v)
+                t = datetime.fromisoformat(row["time"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                writer.writerow([t.isoformat(), t.astimezone(tz).isoformat(), dev["id"], name] + values)
+                count += 1
+        if not found:
             sys.stderr.write("skip %s: not found or no access\n" % dev["id"])
             continue
-        history = json.loads(d["history"]) if d.get("history") else []
-        for row in history:
-            t = datetime.fromisoformat(row["time"].replace("Z", "+00:00")).astimezone(timezone.utc)
-            writer.writerow([t.isoformat(), t.astimezone(tz).isoformat(), d["id"], d["verboseName"]]
-                            + [row.get(f) for f in fields])
-            rows_written += 1
-        sys.stderr.write("  %s (%s): %d rows\n" % (d["verboseName"], d["id"], len(history)))
+        rows_written += count
+        sys.stderr.write("  %s (%s): %d rows\n" % (name, dev["id"], count))
         if i + 1 < len(devices):
             time.sleep(PAUSE_BETWEEN_DEVICES)
     if args.out:

@@ -98,7 +98,7 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 
 **DeviceType**
 - Identity/state: `id`, `verboseName`, `serialNumber`, `claimSerialNumber`, `product`, `tags`, `metadata` (JSON), `location`, `icon`, `iconOverride`, `image`, `created`, `online`, `lastHeard`, `lastHeardThreshold`, `softwareVersion`, `features`, `internalId`, `active`, `activationProviders`.
-- Data: `currentMeasurements(fieldNames, allActiveFields, fieldVerboseNames)`, `currentMeasurement(fieldName)`, `history(fields, timerangestart, timerangeend, resolution, nodatathreshold, locf)`, `historyNg(start, end, resolution)`, `historyStats(start, end)`, `dashboardData(dashboard, dashboardConfig, widgetIds)`, `roleFields`, `numericSemanticField(semantic, aggregation)`, `booleanSemanticField(semantic, aggregation)`, `currentConfigurationValues`, `measurements24h`.
+- Data: `currentMeasurements(fieldNames, allActiveFields, fieldVerboseNames)`, `currentMeasurement(fieldName)`, `history(fields, timerangestart!, timerangeend!, resolution, locf = true, aggregation: DeviceHistoryAggregation = AVG)`, `historyStats(start, end)`, `dashboardData(dashboard, dashboardConfig, widgetIds)`, `roleFields`, `numericSemanticField(semantic, aggregation)`, `booleanSemanticField(semantic, aggregation)`, `currentConfigurationValues`, `measurements24h`.
 - Location: `currentLocation { lat lng }`, `currentLocationVerbose`, `currentLocationLastUpdate`, `deviceInZones(workspaceId, ...)`.
 - Access: `myPermissions(workspace)`, `relationships(workspace)`, `relationshipsInfo(workspace)`, `usersWithAccess(workspace)`, `notifyOffline(workspace)`, `inWorkspaces(currentWorkspace)`, `claimed`, `claimingEnabled`, `claimCode`, `claims`, `publicLinks`, `jwtToken`.
 - Commercial: `plan(workspace)`, `isOverQuota`, `simDataUsage`, `cellularRssi`.
@@ -141,6 +141,7 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 - **FieldSemantic**: `AIR_POLLUTION`, `AMBIENT_LIGHT`, `BATTERY`, `CO2`, `ENERGY_CONSUMPTION`, `FILL_LEVEL`, `HOURS_UNTIL_MAINTENANCE`, `HUMIDITY`, `LOUDNESS`, `PEOPLE_COUNT`, `POWER`, `RUNTIME_HOURS`, `SIGNAL`, `SNR`, `SOIL_MOISTURE`, `TEMPERATURE`, `VOC`, `WATER_CONSUMPTION`, `WATER_DEPTH`, `LOCATION`, `BATTERY_LOW`, `BUTTON_PRESSED`, `DESK_OCCUPIED`, `DEVICE_POWERED`, `DOOR_OPENED`, `EMERGENCY_TRIGGERED`, `GAS_LEAK_DETECTED`, `HVAC_ACTIVE`, `LIGHT_ON`, `MAINTENANCE_REQUIRED`, `MOTION_DETECTED`, `PARKING_OCCUPIED`, `POWER_OUTAGE_DETECTED`, `RAIN_DETECTED`, `ROOM_OCCUPIED`, `SMOKE_DETECTED`, `TAMPER_DETECTED`, `VALVE_OPENED`, `WATER_LEAK_DETECTED`, `WINDOW_OPENED`
 - **NumericSemanticFieldAggregation**: `AVG`, `SUM`, `MAX`, `MIN`
 - **BooleanSemanticFieldAggregation**: `AVG`, `MAX`, `MIN`
+- **DeviceHistoryAggregation**: `MIN`, `MAX`, `AVG`, `SUM`, `FIRST`, `LAST`
 - **WorkspacePermissions**: `basics`, `members`, `billing`, `devices`, `rules`, `cakered`, `whitelabel`, `gateways`, `reports`, `dashboards`, `zones`, `exports`
 - **DevicePermissions**: `edit_basics`, `edit_product`, `record_measurements`
 - **UserOrganizationPermissions**: `create_workspaces`, `members`, `billing`, `whitelabel`, `manage_workspaces`
@@ -163,7 +164,7 @@ Conventions: `Query` is the query root, `Mutations` the mutation root, there is 
 - **OrganizationUserRelationshipsOrder**: `USER_FIRST_NAME_ASC`, `USER_FIRST_NAME_DESC`, `USER_LAST_NAME_ASC`, `USER_LAST_NAME_DESC`, `USER_EMAIL_ASC`, `USER_EMAIL_DESC`
 - **OrganizationWorkspacesOrder**: `NAME_ASC`, `NAME_DESC`, `SMS_QUOTA_ASC`, `SMS_QUOTA_DESC`
 - **WhitelabelUserOrder**: `ID_ASC`, `ID_DESC`, `FIRST_NAME_ASC`, `FIRST_NAME_DESC`, `LAST_NAME_ASC`, `LAST_NAME_DESC`, `EMAIL_ASC`, `EMAIL_DESC`, `LAST_VISIT_ASC`, `LAST_VISIT_DESC`, `DATE_JOINED_ASC`, `DATE_JOINED_DESC`
-- **WhitelabelAuditLogEntryOrder**: `ID_ASC`, `ID_DESC`, `ACTION_ASC`, `ACTION_DESC`, `CREATED_ASC`, `CREATED_DESC`, `USER_ID_ASC`, `USER_ID_DESC`, `USER_FIRST_NAME_ASC`, `USER_FIRST_NAME_DESC`, `USER_LAST_NAME_ASC`, `USER_LAST_NAME_DESC`
+- **WhitelabelAuditLogEntryOrder**: `ID_ASC`, `ID_DESC`, `ACTION_ASC`, `ACTION_DESC`, `CREATED_ASC`, `CREATED_DESC`, `USER_ID_ASC`, `USER_ID_DESC`, `USER_FIRST_NAME_ASC`, `USER_FIRST_NAME_DESC`, `USER_LAST_NAME_ASC`, `USER_LAST_NAME_DESC`, `USER_EMAIL_ASC`, `USER_EMAIL_DESC`, `TARGET_CONTENT_TYPE_MODEL_ASC`, `TARGET_CONTENT_TYPE_MODEL_DESC`, `TARGET_OBJECT_ID_ASC`, `TARGET_OBJECT_ID_DESC`
 <!-- generated:end:enums -->
 
 ## Mutations by theme (generated)

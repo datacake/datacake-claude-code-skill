@@ -121,7 +121,7 @@ Organization-level admins are separate from workspace members (see Organization)
 
 - Belongs to exactly one product and one owning workspace; can additionally be claimed into other workspaces (`claims`, `inWorkspaces`).
 - Core attributes: `verboseName`, `serialNumber`, `tags`, `metadata` (JSON string of key/value pairs), `location` (free-text description), `currentLocation { lat lng }` (from the field with role `DEVICE_LOCATION`), `online`/`lastHeard`/`lastHeardThreshold` (offline when no message within the product's online timeout), `image`, `icon`, `created`, `softwareVersion`, `features`.
-- Data: `currentMeasurements`, `currentMeasurement`, `history`, `historyNg`, `historyStats`, `roleFields`, `numericSemanticField`, `booleanSemanticField`, `currentConfigurationValues`, `dashboardData`, `measurements24h`.
+- Data: `currentMeasurements`, `currentMeasurement`, `history`, `historyStats`, `roleFields`, `numericSemanticField`, `booleanSemanticField`, `currentConfigurationValues`, `dashboardData`, `measurements24h`.
 - Commercial: `plan(workspace:)`, `isOverQuota` (datapoint limit exceeded, new data dropped until reset), `active`/`activationProviders` (time-based activation windows).
 - Kinds by connectivity: LoRaWAN (any supported LNS or the built-in Datacake LNS), API (HTTP webhook, external MQTT broker, REST record endpoint), Particle, NB-IoT (Dragino, 1NCE), D Zero gateways, plus devices added by pincode claiming.
 

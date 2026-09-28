@@ -61,6 +61,7 @@ CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # Enums worth listing verbatim in schema-map.md (names must exist in the schema).
 MAP_ENUMS = [
     "FieldSemantic", "NumericSemanticFieldAggregation", "BooleanSemanticFieldAggregation",
+    "DeviceHistoryAggregation",
     "WorkspacePermissions", "DevicePermissions", "UserOrganizationPermissions",
     "ErrorCode", "FieldType", "ProductMeasurementFieldFieldType", "RoleChoices",
     "DeviceKind", "SearchTagsAnyAll", "DashboardSharingPolicy", "DevicePublicLinkMode",
