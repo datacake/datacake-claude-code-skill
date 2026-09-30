@@ -128,7 +128,7 @@ Organization-level admins are separate from workspace members (see Organization)
 ## Measurement fields
 
 - Defined on the product (`ProductMeasurementFieldType`); each stored value is a datapoint in the time-series database.
-- Types (`FieldType` for creation): `FLOAT`, `INT`, `NUMERIC`, `BOOL`, `STRING`, `COUNTER`, `GEO` (stored as the string `"(lat,lng)"`). Existing fields may also report `OUTPUT`.
+- Types (`FieldType` for creation): `NUMERIC`, `BOOL`, `STRING`, `COUNTER`, `GEO` (stored as the string `"(lat,lng)"`). Existing fields may also report the legacy numeric types `FLOAT`/`INT` and `OUTPUT`; creating with `FLOAT`/`INT` fails silently (`ok: false`).
 - `fieldName` (identifier) is immutable and is what the API, MQTT topics, decoders and rules use. `verboseFieldName` is the label. Convention: identifiers in UPPER_SNAKE_CASE.
 - Extras: `unit` and `displayUnit`/`displayUnitOverride` (unit conversion or relabel), `floatDigits`, `color` (charts), `active` (inactive fields are hidden and not counted), `formula`/`useFormula` (calculated field from other fields; test with `tryFormula`), mapping fields (linear scaling, lookup table, reverse geocoding via `addFieldMapping`), `gauges` (value ranges with colors), `role`, `semantic`.
 - Suggested fields: when a decoder emits identifiers that do not exist yet, they appear as `measurementFieldSuggestions` until created or ignored.

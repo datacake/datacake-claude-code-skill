@@ -7,6 +7,7 @@
 - Account and login
 - Devices: create, edit, remove, claim, move, public links
 - Products, fields and configuration fields
+- HTTP payload decoder (API products)
 - Recording data (REST, MQTT, set value)
 - Downlinks
 - Workspaces, members and API users
@@ -41,7 +42,8 @@
 | Public device dashboard link | `createDevicePublicLink`, `updateDevicePublicLink`, `deleteDevicePublicLink` | `edit_basics` |
 | Offline email for me | `setNotifyOffline(input)` | device view |
 | Add / edit / delete product field | `addProductMeasurementField(...)`, `updateProductMeasurementField(...)`, `deleteProductMeasurementField(id)` | `edit_product` / `devices` |
-| Product settings (timeout, decoder, dashboards) | `updateProduct(input)` | `edit_product` |
+| Product settings (timeout, LoRaWAN decoder, dashboards) | `updateProduct(input)` | `edit_product` |
+| HTTP payload decoder of an API product | `updateApiConfiguration(input)`, test with `tryApiPayloadDecoder(input)` | `edit_product` |
 | Clone / delete product | `cloneProduct(input)`, `deleteProduct(input)` | `devices` |
 | Configuration fields | `createConfigurationField`, `updateConfigurationField`, `deleteConfigurationField(field)`, `setDeviceConfigurationValue(input)` | `edit_product` / `edit_basics` |
 | Test decoder / formula | `tryPayloadDecoder(input)`, `tryFormula(input)` | `edit_product` |
@@ -109,7 +111,9 @@ mutation CreateLora($input: CreateLoraDevicesInputType!) {
 - `productKind`: `NEW` (+ `newProductName`), `EXISTING` (+ `existingProduct`), `TEMPLATE` (+ `templateSlug`).
 - `networkServer`: `DATACAKELNS`, `TTI`, `TTN`, `HELIUM`, `LORIOT`, `CHIRPSTACK`, `ACTILITY`, `SENET`, `MELITA`, `WANESY`, `KPN`, `WIOTYS`, `TEKTELIC`, `MILESIGHTGATEWAY`, `EVERYNET`, `CATTELECOM`, `ORBIWISE`, `NETMORE` (case-insensitive). External LNS still need their forwarding configured (per product, `updateProduct` integration fields or the portal).
 - Datacake LNS devices additionally need per device `appeui`, `appkey`, `frequency` (`EU_863_870_TTN`, `US_902_928_FSB_2`, `AU_915_928_FSB_2`, `AU_915_928_FSB_2_NAM`, `AS_920_923`, `AS_920_923_LBT`) and `deviceClass` (`A` or `C`).
-- `plan`: `free`, `hobby`, `light`, `standard`, `plus`, or a package plan slug (`devicePlans { slug }`); `planCode` for redeem codes. Paid plans require billing details.
+- `plan`: a slug from `devicePlans { slug name maxPerWorkspace netPrice }` (`free`, `standard`, `plus`, `light-2025`, …; `free` is capped by `maxPerWorkspace`, check `canAddToWorkspace(workspace:, numDevices:)`). Paid plans require billing details.
+- Always send `planCode` (`""` when there is no redeem code). Omitting it makes `createLoraDevices`/`createApiDevices` fail with `INTERNAL_ERROR` (verified 2026-09-30), and with `productKind: NEW` the product is still created, leaving an empty product behind.
+- Optional per device: `ttiDevId` (TTI device id when it differs from the DevEUI), `claimCode`/`claimSerialNumber`; per request: `brand` (white label site), `managedTtiApplication` (Datacake-managed TTI application id).
 
 ### Create API devices
 
@@ -119,7 +123,15 @@ mutation CreateApi($input: CreateApiDevicesInputType!) {
 }
 ```
 
-`input`: `{ workspace, plan, planCode, productKind: NEW|EXISTING|TEMPLATE, newProductName|existingProduct|template, devices: [{ serial, name, tags, location }] }`. The serial is what the HTTP decoder uses for routing; choose stable values (hardware ids).
+`input`: `{ workspace, plan, planCode: "", productKind: NEW|EXISTING|TEMPLATE, newProductName|existingProduct|template, devices: [{ serial, name, tags, location }] }`. The serial is what the HTTP decoder uses for routing; choose stable values (hardware ids). Example variables:
+
+```json
+{ "input": { "workspace": "<workspace uuid>", "plan": "free", "planCode": "", "productKind": "EXISTING", "existingProduct": "<product uuid>",
+  "devices": [ { "serial": "sensor-0001", "name": "Room 101", "tags": ["floor-1"], "location": "Building A" } ] } }
+```
+
+- `planCode` is required in practice (see above). A `NEW` product starts with no measurement fields, `lastHeardThreshold` 40 and Datacake's sample HTTP decoder in `product.apiConfiguration.httpPayloadDecoder`; add fields (`addProductMeasurementField`, `fieldType: NUMERIC`) and save your decoder (`updateApiConfiguration`) before sending data.
+- The device serial must be unique per product; the same serial on two products is fine.
 
 ### Add by pincode claiming
 
@@ -144,6 +156,10 @@ mutation EditDevice($deviceId: String!, $input: UpdateDeviceInputType) {
 
 `input` fields: `verboseName`, `location`, `tags` (full replacement), `metadata` (JSON string), `iconOverride`, `image`/`resetImage`, claim settings `canBeClaimed`, `claimCode`, `claimSerialNumber`, LNS ids `ttnDevId`, `ttiDevId`, `heliumDevId`. Example variables: `{"deviceId": "<uuid>", "input": {"tags": ["floor-1", "co2"], "metadata": "{\"asset\":\"A-17\"}"}}`.
 
+- Partial update: only the keys present in `input` change, everything else keeps its value (verified 2026-09-30). To add a tag, read `device.tags`, append, write the whole list back; `tags: []` clears all tags.
+- `metadata` must be a JSON object serialized as a string; the API re-serializes it (whitespace changes), so parse before comparing.
+- Serial: `changeDeviceSerial(id, serial)` takes effect immediately for HTTP-decoder routing. Payloads that name the old serial are still answered with `thanks` but stored nowhere.
+
 ### Remove and delete data
 
 ```graphql
@@ -152,7 +168,7 @@ mutation Remove($deviceId: String!, $workspaceId: String!) {
 }
 ```
 
-Removing from the owning workspace deletes the device and its data; removing from a claiming workspace only drops the claim.
+Removing from the owning workspace deletes the device and its data; removing from a claiming workspace only drops the claim. Afterwards `device(deviceId:)` returns `null` and `workspace.deviceCount` / `product.deviceCount` drop at once; the product stays, even when empty (`deleteProduct` removes it).
 
 ```graphql
 mutation Purge($deviceId: UUID!, $start: DateTime!, $end: DateTime!, $dryRun: Boolean!) {
@@ -163,7 +179,10 @@ mutation Purge($deviceId: UUID!, $start: DateTime!, $end: DateTime!, $dryRun: Bo
 }
 ```
 
-Run with `dryRun: true` first, show `datapointsAffected`, then repeat with `false` after confirmation. Omit `fieldNames` to target all fields.
+Run with `dryRun: true` first, show `datapointsAffected`, then repeat with `false` after confirmation. Omit `fieldNames` to target all fields. `start`/`end` are UTC, end exclusive.
+
+- The real run returns `datapointsAffected: null`; only the dry run counts (verified 2026-09-30).
+- Deletion removes the datapoints from `history`, but `currentMeasurements` keeps showing the last value with its old `modified` timestamp until the device sends that field again. Do not use current values to confirm a purge; query `history` for the window instead.
 
 ### Claims and moves
 
@@ -192,8 +211,8 @@ mutation AddField($productId: String!) {
     productId: $productId
     fieldName: "TEMPERATURE"
     verboseFieldName: "Temperature"
-    fieldType: FLOAT
-    unit: "°C"
+    fieldType: NUMERIC
+    displayUnitOverride: "°C"
     role: PRIMARY
     semantic: TEMPERATURE
     floatDigits: 1
@@ -213,10 +232,10 @@ mutation EditField($fieldId: String!) {
 }
 ```
 
-- `fieldType` for new fields: `FLOAT`, `INT`, `NUMERIC`, `BOOL`, `STRING`, `COUNTER`, `GEO`. Identifiers cannot be changed later; delete and recreate instead (`deleteProductMeasurementField(id)` drops the data of that field on all devices).
+- `fieldType` for new fields: `NUMERIC` (all numbers), `BOOL`, `STRING`, `COUNTER`, `GEO`. `FLOAT` and `INT` are legacy values that existing fields still report; creating with them returns `ok: false` and no error message (verified 2026-09-30). `unit` and `displayUnitOverride` are both accepted at creation, `displayUnitOverride` also fills `unit`. Identifiers cannot be changed later; delete and recreate instead (`deleteProductMeasurementField(id)` drops the data of that field on all devices).
 - Formulas: `updateProductMeasurementField(fieldId, formula: "TEMPERATURE * 1.8 + 32", useFormula: true)`; test with `tryFormula(input: { device, formula })`.
 - Unit display: prefer `displayUnitOverride` (label only); `displayUnit` conversion is deprecated.
-- Product settings: `updateProduct(input: { product, lastHeardThreshold, icon, lorawanPayloadDecoder, dashboards, allowMultipleClaims, ... })`; test decoders with `tryPayloadDecoder(input: { product, code, payload, port, device })`.
+- Product settings: `updateProduct(input: { product, lastHeardThreshold, icon, lorawanPayloadDecoder, dashboards, allowMultipleClaims, ... })`; test LoRaWAN decoders with `tryPayloadDecoder(input: { product, code, payload, port, device })`. The HTTP decoder of API products is not on `updateProduct`, see the next section.
 - Clone into another workspace: `cloneProduct(input: { productId, targetWorkspaceId, copyIntegrations, productName })`; delete an empty product: `deleteProduct(input: { id })`.
 - Configuration fields: `createConfigurationField(input: { product, fieldType: NUMBER|STRING|BOOL, fieldName, verboseFieldName, unit, description, defaultValueNumber, defaultValueBool, defaultValueString })` (all defaults required, use the matching one); per device:
 
@@ -231,6 +250,47 @@ mutation SetConfig($deviceId: String!) {
 
 Use `resetToDefault: true` to clear an override.
 
+### HTTP payload decoder (API products)
+
+API products receive data on `POST https://api.datacake.co/integrations/api/<product id>/<optional subpath>` (no auth header; the endpoint answers `thanks` with HTTP 200 whenever the request reached the decoder, even if the decoder returned nothing). The decoder lives in `product.apiConfiguration.httpPayloadDecoder` and is written with `updateApiConfiguration` (permission `edit_product`; it overwrites the decoder for every device of the product, so test first):
+
+```graphql
+mutation SaveDecoder($input: UpdateApiConfigurationInputType!) {
+  updateApiConfiguration(input: $input) { ok }
+}
+```
+
+`input`: `{ product: "<product uuid>", httpPayloadDecoder: "<javascript>" }` (`mqttServer` optional). The decoder signature and the `request` object:
+
+```javascript
+function Decoder(request) {
+  // request = { method: "POST", path: "/integrations/api/<product>/<subpath>", body: "<raw string>",
+  //             headers: { "Content-Type": "application/json", ... }, GET: { foo: ["bar"] }, POST: { form: ["field"] } }
+  var payload = JSON.parse(request.body);
+  var ts = payload.timestamp || Math.floor(Date.now() / 1000);   // Unix seconds, optional
+  return [
+    { device: payload.device, field: "TEMPERATURE", value: payload.temperature, timestamp: ts },
+    { device: payload.device, field: "POWER", value: payload.power, timestamp: ts }
+  ];
+}
+```
+
+- `device` is the device serial (or device id), `field` the identifier of an existing product field, `value` number, boolean, string or `"(lat,lng)"`. Entries whose field does not exist are dropped silently.
+- Runtime helpers inside the decoder: `deviceSerialToId[serial]` (serial to device uuid), `measurements[deviceId]["FIELD"].value` / `.timestamp` (last stored value), `configurationValues[deviceId]["FIELD"]` (configuration field, device override or product default), `console.log`.
+- Dry run without storing anything:
+
+```graphql
+mutation TryDecoder($input: TryApiPayloadDecoderInputType!) {
+  tryApiPayloadDecoder(input: $input) {
+    error executionTimeMs log output
+    matchedFields { device { id serialNumber } fieldName value timestamp isNew verboseName type }
+  }
+}
+```
+
+`input`: `{ product, code, httpMethod: POST, contentType: "application/json", body: "<json string>", headers: [{ key, value }], urlAppendix: "" }`. `output` is the JSON the decoder returned; `matchedFields` shows what would be stored. `isNew: true` with `device: null` means the field does not exist on the product yet (the portal offers to create it); existing fields come back with the resolved `device`.
+- After a real POST, `device.lastHeard`, `online` and `currentMeasurements { field { fieldName } value modified }` reflect the data within a second (verified 2026-09-30 with three devices).
+
 ## Recording data
 
 REST batch endpoint (API devices and any device the token may write to; needs `record_measurements`):
@@ -242,7 +302,7 @@ curl -X POST "https://api.datacake.co/v1/devices/<deviceId>/record/?batch=true" 
 ```
 
 - `field` = identifier, `value` number/string/bool, optional `timestamp` (Unix epoch seconds) for backfilling; limit 1 write per second per field.
-- Product webhook: `POST https://api.datacake.co/integrations/api/<product id>/` with any JSON; the product's HTTP decoder returns `[{ device: "<serial>", field, value }]`.
+- Product webhook: `POST https://api.datacake.co/integrations/api/<product id>/` with any body; the product's HTTP decoder maps it to `[{ device: "<serial>", field, value, timestamp? }]` (details in the previous section).
 - MQTT: publish the value to `dtck-pub/<product_slug>/<device_id>/<FIELD>` on `mqtt.datacake.co:8883` (token as username and password).
 - GraphQL `setValue` writes one value (used by dashboards; works with public links in WRITE mode):
 
