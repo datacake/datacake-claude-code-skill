@@ -229,12 +229,30 @@ Widgets (portal): value, chart, map, image map, table, measurement list, boolean
 
 ## Claiming vs moving devices
 
+Two different operations. **Claiming** shares a device: the owning ("master") workspace keeps the device, its product, plan and billing, and another workspace gets a reference to the same device (same id, same data, live). **Moving** transfers ownership: the device leaves the source workspace for good.
+
+The pattern behind claiming is the reseller: a master workspace holds the whole fleet (say 1000 devices) and must keep seeing all of it. Subsets are sold to end customers, who see only their devices in their own workspaces. Two ways to get them there: the customer types serial + claim code into the portal ("Add device > Claim", pincode claiming), or the reseller prepares the customer workspace and claims the devices into it from the master side, 20 at a time (owner-side claiming, batchable). Never use a move for this: the master would lose the devices.
+
 | | Claiming | Moving |
 |---|---|---|
-| Effect | another workspace gets access; the device stays owned and billed by the original workspace | ownership and billing transfer permanently |
-| Mechanism | owner enables claiming and sets a claim code (`updateDevice(input: { canBeClaimed, claimCode })`); receiver adds the device with serial + code (`addPincodeDevice`); paid plans only; claiming switches itself off after use unless `allowMultipleClaims` | sender creates a move request (`createDeviceMoveRequest`); target workspace admin accepts (`acceptDeviceMoveRequest`, choosing plans) or rejects; sender can cancel |
-| Visibility | owner sees `device.claims` and can `revokeDeviceClaims` | `workspace.incomingDeviceMoveRequests` / `outgoingDeviceMoveRequests` |
-| Caveats | claimed devices show no datapoint usage to the claimer | rules, webhooks, reports are not moved; product is copied so the MQTT product slug changes |
+| Effect | device visible in both workspaces; the owner keeps product, plan and billing; `device.inWorkspaces` lists both | ownership, plan and billing transfer; the device disappears from the source |
+| Who acts | receiver (`addPincodeDevice`) or owner (`claimDeviceIntoWorkspace`) | sender creates a request, target admin accepts or rejects, sender may cancel; the target's plan capacity applies |
+| Product | stays in the master workspace; the claiming workspace lists no product in `workspace.products`, `devicesFiltered` shows the device with the master's `product` | copied into the target as a new product (new id, slug suffixed `-1`, `-2`, …); when the last devices of a product move, `moveProduct: true` and the source product is deleted; devices never merge back into an existing product |
+| Gates | `claimingEnabled` (billing: plan includes claiming) and `claimed` (one-time lock) | none beyond permissions and plan capacity; request expires after 14 days |
+| Undo | `revokeDeviceClaims` (owner, names the *claiming* workspace) or `removeDevice` in the claiming workspace: both drop only the reference | another move request |
+| Visibility | owner: `device.claims`; claimer: device in `devicesFiltered` (`total` counts it, `workspace.deviceCount` counts owned devices only) | `workspace.incomingDeviceMoveRequests` / `outgoingDeviceMoveRequests`, status `pending`, `accepted`, `completed`, `rejected`, `cancelled` |
+| Not carried along | nothing to carry, it is the same device | rules, webhooks, reports, global dashboards referencing the device; the MQTT product slug changes |
+
+Claiming mechanics (verified 2026-09-30):
+
+- Two device flags. `claimingEnabled` is the billing gate: true only on a plan that includes claiming (free plan: false; the portal greys the claiming checkbox out). `claimed` is the one-time lock: true on a new device and again after every successful claim.
+- Opening the lock takes `canBeClaimed: true` **and** `claimCode` in the same `updateDevice` input; either key alone leaves `claimed: true`. Optional `claimSerialNumber` overrides the serial the customer has to type.
+- Receiver side, `addPincodeDevice(input: { workspace, serialNumber, pinCode })`, needs `claimingEnabled` (otherwise `error: "Claiming is disabled for this device"`) and the open lock.
+- Owner side, `claimDeviceIntoWorkspace(deviceId | deviceSerialNumber, workspaceId)`, needs `devices` in the master workspace and membership in the target; it checks the lock but not the billing gate (worked on free-plan devices). Returns only `ok`; `false` means the lock is closed or the device is not accessible; repeating it for the same workspace is a no-op `ok: true`.
+- After a claim the lock closes unless the product has `allowMultipleClaims` (`updateProduct(input: { allowMultipleClaims: true })`, visible as `product.features` `allow_multiple_claims`); then one open lock serves any number of workspaces.
+- In the claiming workspace the device reports `plan: null`, the master's product and the caller's device permissions; REST, MQTT and downlinks address the same device id.
+
+Moving mechanics (verified 2026-09-30): `acceptDeviceMoveRequest` returns `status: accepted`; the transfer runs asynchronously and the request reaches `completed` a few seconds later (poll `incomingDeviceMoveRequests` and check `error`/`errorCode`). The device keeps id, name, tags, metadata, current values and history. `moveRequest.products[].moveProduct` tells whether the product is moved (source product deleted) or cloned.
 
 ## Plans, quotas and data retention
 

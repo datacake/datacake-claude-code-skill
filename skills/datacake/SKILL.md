@@ -3,7 +3,7 @@ name: datacake
 description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current and historical measurements, KPIs, cross-device aggregations and meter consumption, core mutations (device creation, data ingestion via REST/MQTT, downlinks), the Rule Engine NG (list, create and update rules, conditions, actions, notification templates, logs), and the administration model (organization admins, workspace members, invites, permissions, API users, white label sites, audit logs) for admin consoles and bulk onboarding. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, members, measurements, rules or alerts, LoRaWAN data in Datacake, or wants a dashboard, app, report, admin tool, alerting rule or integration on Datacake data.
 license: MIT
 metadata:
-  version: 0.4.2
+  version: 0.4.3
   api: https://api.datacake.co/graphql/
   docs: https://docs.datacake.de
 ---
@@ -140,6 +140,7 @@ query Kpis($workspaceId: String!) {
 | Bulk historical data? | Exports (`createManualExport`) or `scripts/history_to_csv.py`, not thousands of `history` calls. |
 | Alerts, notifications, scheduled downlinks? | Rule Engine NG: list with `workspace.rulesNG`, read with `ruleNG(id)`, write with `createRuleNG`/`updateRuleNG`; one product per rule, field/device/downlink UUIDs from `scripts/rules.py ids`, templates such as `{{ triggering_device['measurements']['CO2'] }}`, logs via `executionLogEntries`. All in `reference/rules-ng.md`. |
 | Writes? | REST record endpoint for values, `sendDownlink`, `updateDevice`, `createRuleNG`, … see `reference/mutations.md`; check permissions and confirm destructive actions. |
+| Reseller with a master fleet and end-customer workspaces? | Claiming, not moving: the master keeps every device, customer workspaces get references. Owner opens the lock with `updateDevice(canBeClaimed: true, claimCode)` (both keys together), then either the customer claims by serial + code (`addPincodeDevice`, paid plan) or the owner batch-claims into the prepared workspace with aliased `claimDeviceIntoWorkspace` calls. Details: `reference/platform-concepts.md` (Claiming vs moving), recipe in `reference/mutations.md`. |
 | Onboard API devices? | `createApiDevices` (always send `planCode: ""`), then `addProductMeasurementField` with `fieldType: NUMERIC`, save the HTTP decoder with `updateApiConfiguration`, test with `tryApiPayloadDecoder`, POST to `integrations/api/<product id>/`. Recipe in `reference/mutations.md`. |
 
 ## Hard rules

@@ -5,7 +5,7 @@
 - Conventions and safety
 - Operation index
 - Account and login
-- Devices: create, edit, remove, claim, move, public links
+- Devices: create, edit, remove; claims (share with another workspace); moves (transfer ownership); public links
 - Products, fields and configuration fields
 - HTTP payload decoder (API products)
 - Recording data (REST, MQTT, set value)
@@ -37,8 +37,8 @@
 | Change serial | `changeDeviceSerial(id, serial)` | `edit_basics` |
 | Remove device from workspace | `removeDevice(input)` | `devices` |
 | Delete measurements in a window | `deleteDeviceData(input)` | `devices` |
-| Share access (claim) / revoke | `updateDevice` (claim code), `claimDeviceIntoWorkspace`, `revokeDeviceClaims` | `devices` |
-| Transfer devices | `createDeviceMoveRequest`, `acceptDeviceMoveRequest`, `rejectDeviceMoveRequest`, `cancelDeviceMoveRequest` | `devices` in both workspaces |
+| Share devices with another workspace (claiming, reseller pattern) | `updateDevice(canBeClaimed + claimCode)` opens the lock; `addPincodeDevice` (receiver) or `claimDeviceIntoWorkspace` (owner, batchable); `revokeDeviceClaims` | `devices` in the master workspace, membership in the target |
+| Transfer devices (ownership moves) | `createDeviceMoveRequest`, `acceptDeviceMoveRequest`, `rejectDeviceMoveRequest`, `cancelDeviceMoveRequest` | `devices` in both workspaces |
 | Public device dashboard link | `createDevicePublicLink`, `updateDevicePublicLink`, `deleteDevicePublicLink` | `edit_basics` |
 | Offline email for me | `setNotifyOffline(input)` | device view |
 | Add / edit / delete product field | `addProductMeasurementField(...)`, `updateProductMeasurementField(...)`, `deleteProductMeasurementField(id)` | `edit_product` / `devices` |
@@ -185,11 +185,72 @@ Run with `dryRun: true` first, show `datapointsAffected`, then repeat with `fals
 - The real run returns `datapointsAffected: null`; only the dry run counts (verified 2026-09-30).
 - Deletion removes the datapoints from `history`, but `currentMeasurements` keeps showing the last value with its old `modified` timestamp until the device sends that field again. Do not use current values to confirm a purge; query `history` for the window instead.
 
-### Claims and moves
+### Claims: share devices with another workspace
 
-- Enable claiming: `updateDevice(input: { canBeClaimed: true, claimCode: "1234" })`; multiple claims via `updateProduct(input: { allowMultipleClaims: true })`.
-- Revoke: `revokeDeviceClaims(input: { workspaceId, deviceIds })` (owner).
-- Move: `createDeviceMoveRequest(input: { sourceWorkspaceId, targetWorkspaceId, deviceIds, includeIntegrations, message })` → target admin runs `acceptDeviceMoveRequest(input: { moveRequestId, planOverrides: [{ deviceId, planSlug }], planCode })` or `rejectDeviceMoveRequest`; sender may `cancelDeviceMoveRequest`. Track with `workspace.incomingDeviceMoveRequests` / `outgoingDeviceMoveRequests` (Relay connections; `status`, `deviceCount`, `expiresAt`).
+Claiming keeps the device in its master workspace and adds a reference in another one (reseller pattern: master fleet, end-customer workspaces; concepts in `platform-concepts.md`). It is not a move.
+
+Step 1, owner opens the lock and sets the code. Both keys in one input, otherwise `claimed` stays `true`:
+
+```graphql
+mutation OpenClaim($deviceId: String!) {
+  updateDevice(deviceId: $deviceId, input: { canBeClaimed: true, claimCode: "4711" }) {
+    ok
+    device { id serialNumber claimed claimingEnabled claimCode claimSerialNumber }
+  }
+}
+```
+
+Step 2a, the customer claims by pincode (portal "Add device > Claim", or API; needs `claimingEnabled`, i.e. a paid plan):
+
+```graphql
+mutation Claim($input: AddPincodeDeviceInputType!) {
+  addPincodeDevice(input: $input) { ok error device { id verboseName } }
+}
+```
+
+`input`: `{ workspace: "<customer workspace uuid>", serialNumber: "...", pinCode: "4711" }`. `error: "Claiming is disabled for this device"` = `claimingEnabled` false.
+
+Step 2b, the owner claims into a prepared workspace, batched with aliases (20 to 50 per request is fine; works on free-plan devices, needs `devices` in the master and membership in the target):
+
+```graphql
+mutation BatchClaim($ws: String!) {
+  d1: claimDeviceIntoWorkspace(deviceSerialNumber: "SN-0001", workspaceId: $ws) { ok }
+  d2: claimDeviceIntoWorkspace(deviceSerialNumber: "SN-0002", workspaceId: $ws) { ok }
+  d3: claimDeviceIntoWorkspace(deviceId: "<device uuid>", workspaceId: $ws) { ok }
+}
+```
+
+Open the locks the same way first (aliased `updateDevice` calls with `canBeClaimed: true, claimCode`). `ok: false` on an alias means that device's lock is closed or the caller has no access to it. Verify with `device { claimed claims { id name organizationName } inWorkspaces { id name } }` and in the target with `workspace.devicesFiltered` (claimed devices are in `total`, not in `workspace.deviceCount`). After a successful claim the lock closes again; set `updateProduct(input: { product, allowMultipleClaims: true })` when the same devices go into several workspaces.
+
+Revoke (owner; `workspaceId` is the **claiming** workspace, naming the owner fails with "Cannot revoke the claim of the workspace that owns the device"):
+
+```graphql
+mutation Revoke($ws: String!, $ids: [String!]!) {
+  revokeDeviceClaims(input: { workspaceId: $ws, deviceIds: $ids }) {
+    ok error revokedCount devices { id claimed claims { name } }
+  }
+}
+```
+
+Alternatively the claiming workspace runs `removeDevice(input: { deviceId, workspaceId: "<claiming workspace>" })`, which drops only the reference; the device and its data stay with the owner (verified 2026-09-30).
+
+### Moves: transfer ownership
+
+```graphql
+mutation Move($input: CreateDeviceMoveRequestInputType!) {
+  createDeviceMoveRequest(input: $input) {
+    ok errors
+    moveRequest { id status expiresAt deviceCount products { id name moveProduct devices { serialNumber planSlug } } }
+  }
+}
+```
+
+`input`: `{ sourceWorkspaceId, targetWorkspaceId, deviceIds, includeIntegrations, message }`. The target workspace admin then runs `acceptDeviceMoveRequest(input: { moveRequestId, planOverrides: [{ deviceId, planSlug }], planCode })` (returns `{ ok errors moveRequest { status } }`) or `rejectDeviceMoveRequest(input: { moveRequestId })`; the sender may `cancelDeviceMoveRequest(input: { moveRequestId })`. Reject and cancel return only `{ ok errors }`.
+
+- Status flow: `pending` → `accepted` → `completed` (asynchronous, seconds; poll `workspace.incomingDeviceMoveRequests { edges { node { id status error errorCode } } }`), or `rejected` / `cancelled`; requests expire after 14 days (`expiresAt`).
+- Devices keep id, name, tags, metadata, current values and history. Products are cloned into the target (new id, slug suffixed `-1`, `-2`); `moveProduct: true` when every device of the product moves, then the source product is deleted. Moving devices back does not merge them into the original product (devices cannot change product), so the workspace ends up with two products of the same name.
+- Rules, webhooks, reports and dashboards stay behind; recreate them in the target (`rules.py export` / `create`).
+- Plans: without `planOverrides` each device keeps its plan slug; the target's free-plan capacity (`devicePlans { maxPerWorkspace }`) applies.
 
 ### Public device links
 
@@ -202,7 +263,20 @@ mutation PublicLink($deviceId: String!) {
 }
 ```
 
-`mode: WRITE` allows set-value and downlink widgets. The public URL is built by the frontend (`https://app.datacake.de/pd/<device id>`, or the white-label domain); viewers query `publicDevice(id:, token:)`.
+`mode: WRITE` allows set-value and downlink widgets. The public URL is built by the frontend (`https://app.datacake.de/pd/<device id>`, or the white-label domain). Viewers query without an `Authorization` header, `id` being the **link** id:
+
+```graphql
+query Public($linkId: String!, $token: String!) {
+  publicDevice(id: $linkId, token: $token) {
+    id verboseName serialNumber online lastHeard tags productHardware hasWriteScope
+    publicLink { id mode }
+    temperature: numericSemanticField(semantic: TEMPERATURE) { value }
+    roleFields { role }
+  }
+}
+```
+
+A wrong token returns `publicDevice: null`. `updateDevicePublicLink(device, link, input: { token, mode })` returns `{ ok link { id token mode } }` (`WRITE` flips `hasWriteScope` to true); `deleteDevicePublicLink(device, link)` returns `{ ok }`, after which `publicDevice` is `null` (verified 2026-09-30). `PublicDeviceType` also carries `metadata`, `dashboards`, `dashboardData`, `dashboardConfigFields` and `image` for building the public page.
 
 ## Products, fields and configuration fields
 
