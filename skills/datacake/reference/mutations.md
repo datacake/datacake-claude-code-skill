@@ -109,6 +109,7 @@ mutation CreateLora($input: CreateLoraDevicesInputType!) {
 ```
 
 - `productKind`: `NEW` (+ `newProductName`), `EXISTING` (+ `existingProduct`), `TEMPLATE` (+ `templateSlug`).
+- Choose `productKind` per hardware/payload type, not per device: `EXISTING` (or one `TEMPLATE`/`NEW` for the first batch) for every device of the same type, so decoder, dashboard and rules are shared; `NEW` per device only for genuinely unique devices. The product cannot be changed afterwards. Reasoning and trade-offs: `platform-concepts.md`, "One product for many devices, or one product per device?".
 - `networkServer`: `DATACAKELNS`, `TTI`, `TTN`, `HELIUM`, `LORIOT`, `CHIRPSTACK`, `ACTILITY`, `SENET`, `MELITA`, `WANESY`, `KPN`, `WIOTYS`, `TEKTELIC`, `MILESIGHTGATEWAY`, `EVERYNET`, `CATTELECOM`, `ORBIWISE`, `NETMORE` (case-insensitive). External LNS still need their forwarding configured (per product, `updateProduct` integration fields or the portal).
 - Datacake LNS devices additionally need per device `appeui`, `appkey`, `frequency` (`EU_863_870_TTN`, `US_902_928_FSB_2`, `AU_915_928_FSB_2`, `AU_915_928_FSB_2_NAM`, `AS_920_923`, `AS_920_923_LBT`) and `deviceClass` (`A` or `C`).
 - `plan`: a slug from `devicePlans { slug name maxPerWorkspace netPrice }` (`free`, `standard`, `plus`, `light-2025`, …; `free` is capped by `maxPerWorkspace`, check `canAddToWorkspace(workspace:, numDevices:)`). Paid plans require billing details.
@@ -236,7 +237,7 @@ mutation EditField($fieldId: String!) {
 - Formulas: `updateProductMeasurementField(fieldId, formula: "TEMPERATURE * 1.8 + 32", useFormula: true)`; test with `tryFormula(input: { device, formula })`.
 - Unit display: prefer `displayUnitOverride` (label only); `displayUnit` conversion is deprecated.
 - Product settings: `updateProduct(input: { product, lastHeardThreshold, icon, lorawanPayloadDecoder, dashboards, allowMultipleClaims, ... })`; test LoRaWAN decoders with `tryPayloadDecoder(input: { product, code, payload, port, device })`. The HTTP decoder of API products is not on `updateProduct`, see the next section.
-- Clone into another workspace: `cloneProduct(input: { productId, targetWorkspaceId, copyIntegrations, productName })`; delete an empty product: `deleteProduct(input: { id })`.
+- Clone into the same or another workspace: `cloneProduct(input: { productId, targetWorkspaceId, copyIntegrations, productName })` returns only `ok`; the copy (fields with roles and semantics, decoder, online timeout, plus LNS/MQTT credentials when `copyIntegrations`) appears in `workspace.products` with 0 devices and is never synchronized with the original (verified 2026-09-30). Delete an empty product: `deleteProduct(input: { id })`.
 - Configuration fields: `createConfigurationField(input: { product, fieldType: NUMBER|STRING|BOOL, fieldName, verboseFieldName, unit, description, defaultValueNumber, defaultValueBool, defaultValueString })` (all defaults required, use the matching one); per device:
 
 ```graphql

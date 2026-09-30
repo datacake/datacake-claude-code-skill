@@ -3,7 +3,7 @@ name: datacake
 description: Build tools, scripts, analytics and custom web or mobile frontends on the Datacake IoT platform using its GraphQL API (api.datacake.co). Covers the data model (organizations, workspaces, products, devices, fields, semantics, roles, tags, rules, dashboards, permissions), authentication, ready-made queries for device lists, current and historical measurements, KPIs, cross-device aggregations and meter consumption, core mutations (device creation, data ingestion via REST/MQTT, downlinks), the Rule Engine NG (list, create and update rules, conditions, actions, notification templates, logs), and the administration model (organization admins, workspace members, invites, permissions, API users, white label sites, audit logs) for admin consoles and bulk onboarding. Use whenever the user mentions Datacake, api.datacake.co, Datacake devices, workspaces, members, measurements, rules or alerts, LoRaWAN data in Datacake, or wants a dashboard, app, report, admin tool, alerting rule or integration on Datacake data.
 license: MIT
 metadata:
-  version: 0.4.1
+  version: 0.4.2
   api: https://api.datacake.co/graphql/
   docs: https://docs.datacake.de
 ---
@@ -39,6 +39,7 @@ Organization  → billing, quotas, admins, white label
 ```
 
 - A **field** is defined on the product; its **identifier** (`fieldName`, UPPER_SNAKE, immutable) is what every measurement query needs. `verboseFieldName` is only a label.
+- **Product = unit of sharing.** Default is one product per device type with hundreds of devices behind one decoder, dashboard, downlink set and rule scope; per-device differences go into tags, metadata and configuration-field overrides. One product per device (1:1) only for genuinely unique payloads or capabilities, at the price of N decoders, N dashboards and N rules. A device never changes product, so decide before onboarding (`reference/platform-concepts.md`, Product).
 - **Semantics** (`TEMPERATURE`, `CO2`, `BATTERY`, `DOOR_OPENED`, …) label fields across products and enable filters, KPIs and aggregations. **Roles** (`PRIMARY`, `SECONDARY`, `DEVICE_BATTERY`, `DEVICE_SIGNAL`, `DEVICE_LOCATION`) mark the main fields of any product. **Tags** group devices.
 - Members are users or **API users** (token-only); permissions exist per workspace (`devices`, `rules`, `members`, …) and per device (`edit_basics`, `edit_product`, `record_measurements`). A personal token carries everything its user may do.
 - People come in four kinds: **organization admins** (`organization.userRelationships`, permissions `members`, `billing`, `whitelabel`, `manage_workspaces`, `create_workspaces`; one owner), **workspace members** (`workspace.userRelationships`), **API users** and **pending invites** (`invitedUsers`, resolved when the invitee signs up). Admins are not members and vice versa; `organization.permissions` and `workspace.myPermissions` describe the caller. **White label sites** brand the portal for customers and carry their own user list, audit log and SSO. Full model and admin recipes: `reference/organizations-and-members.md`.

@@ -113,9 +113,41 @@ Organization-level admins are separate from workspace members (see Organization)
 
 - A product is the template every device inherits: database fields, payload decoder(s), downlinks/encoders, dashboard layout(s), icon, online timeout (`lastHeardThreshold` in minutes), configuration fields, gauges and integration settings (LNS credentials, MQTT server, HTTP decoder). Data is stored per device; definitions are shared. Changing a product changes all its devices immediately.
 - Created when adding devices: from the template catalog (hundreds of LoRaWAN and API templates: decoder, fields, dashboard included), as a new empty product, or by adding devices to an existing product. `productKind: NEW | EXISTING | TEMPLATE` in the create mutations.
-- Workspace-bound. Reuse in another workspace by cloning (`cloneProduct`, optionally with integration settings). Products with no devices can be deleted (`deleteProduct`) and disappear when the last device is removed.
+- Workspace-bound. Reuse in the same or another workspace by cloning (`cloneProduct`, optionally with integration settings; the copy is independent afterwards). Products with no devices can be deleted (`deleteProduct`) and disappear when the last device is removed.
 - API products expose a per-product webhook URL `https://api.datacake.co/integrations/api/<id>/` whose HTTP decoder routes payloads to devices by serial number.
 - `product.measurementFields` is the authoritative list of field identifiers for all devices of the product; `product.deviceCount` counts devices regardless of the caller's permissions.
+
+### One product for many devices, or one product per device?
+
+The product is the unit of sharing, and the choice is permanent per device: no mutation moves a device to another product (`UpdateDeviceInputType` has no `product`). Changing the model later means creating new devices and re-importing history through the REST record endpoint with timestamps. Decide before onboarding.
+
+**Default: one product per device type (1:n).** Every device with the same hardware and payload format joins one product, whether ten or a thousand. Shared: fields, decoder, downlinks and encoders, dashboard layout, online timeout, configuration-field defaults, integration settings (one LNS integration or one HTTP webhook URL with routing by serial, one MQTT topic prefix `dtck/<product slug>/…`). What this buys:
+
+- Change once, applies to every device instantly: a decoder fix, a new field, a dashboard widget.
+- Rules are scoped to one product. One rule covers up to 1000 devices; a fleet spread over three products needs the same rule three times.
+- Apps hardcode one identifier set per product and read `product.measurementFields` once.
+- Onboarding is one `createLoraDevices` / `createApiDevices` call with `productKind: EXISTING` and a list of devices, or a catalog template (`TEMPLATE`) that ships decoder, fields and dashboard.
+
+Individuality that does **not** need its own product:
+
+| Need | Use |
+|---|---|
+| Name, place, grouping, asset data, picture | device attributes: `verboseName`, `location`, `tags`, `metadata`, `image`, `iconOverride` |
+| Different thresholds, intervals, calibration offsets, external IDs | configuration fields with per-device override (`setDeviceConfigurationValue`), readable in decoders, encoders and rule conditions |
+| Alerts for a subset only | rule scope by tags or explicit devices; several rules on one product |
+| Special views for one customer or site | tags + folders, global dashboards (workspace-level, mix any devices), public device links |
+| Some devices lack a sensor | leave the field empty; a field without values stores no datapoints and widgets show "no data" |
+| Payload versions or hardware revisions | one decoder that branches on a version byte, the serial or a configuration value |
+
+**When one product per device (1:1) is right.** Devices that are unique in payload, capabilities or presentation: a PLC or building controller with its own register map, a gateway that aggregates a whole plant, an energy meter with an individual point list, a per-customer API integration, a prototype. Each device is created with `productKind: NEW`, or from a sibling via `cloneProduct` (works inside the same workspace; copies fields with roles and semantics, decoder and online timeout, `copyIntegrations` adds LNS/MQTT credentials; nothing is synchronized afterwards; returns only `ok`, find the clone in `workspace.products`). State the costs to the user:
+
+- N decoders, N dashboards, N downlink sets, N integration configs to maintain; template reuse is gone.
+- The same alert logic has to exist N times (one rule per product); `scripts/rules.py export`/`create` reduces the typing.
+- Apps cannot hardcode identifiers. Set `role` and `semantic` on every field from the start and render through `roleFields`, `numericSemanticField` and semantic filters so a mixed fleet looks uniform.
+
+**Middle ground:** one product per payload variant, tags for customer, site and building, configuration fields for per-device parameters. Split a product only when decoder, field set or downlinks genuinely differ, never because two devices need different names, thresholds or a different dashboard.
+
+Onboarding tools and intake should ask: how many distinct hardware/payload types? Do some devices need fields or downlinks the others must not have? Will one alert apply across the fleet? The answers decide `productKind` per batch.
 
 ## Device
 
