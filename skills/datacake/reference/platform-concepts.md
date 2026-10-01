@@ -250,7 +250,7 @@ Claiming mechanics (verified 2026-09-30):
 - Receiver side, `addPincodeDevice(input: { workspace, serialNumber, pinCode })`, needs `claimingEnabled` (otherwise `error: "Claiming is disabled for this device"`) and the open lock.
 - Owner side, `claimDeviceIntoWorkspace(deviceId | deviceSerialNumber, workspaceId)`, needs `devices` in the master workspace and membership in the target; it checks the lock but not the billing gate (worked on free-plan devices). Returns only `ok`; `false` means the lock is closed or the device is not accessible; repeating it for the same workspace is a no-op `ok: true`.
 - After a claim the lock closes unless the product has `allowMultipleClaims` (`updateProduct(input: { allowMultipleClaims: true })`, visible as `product.features` `allow_multiple_claims`); then one open lock serves any number of workspaces.
-- In the claiming workspace the device reports `plan: null`, the master's product and the caller's device permissions; REST, MQTT and downlinks address the same device id.
+- Billing stays with the owner by design: the reseller sells the device with connectivity, so the claiming workspace pays nothing and the device reports `plan: null` there, with the master's product and the caller's device permissions. REST, MQTT and downlinks address the same device id.
 
 Moving mechanics (verified 2026-09-30): `acceptDeviceMoveRequest` returns `status: accepted`; the transfer runs asynchronously and the request reaches `completed` a few seconds later (poll `incomingDeviceMoveRequests` and check `error`/`errorCode`). The device keeps id, name, tags, metadata, current values and history. `moveRequest.products[].moveProduct` tells whether the product is moved (source product deleted) or cloned.
 
