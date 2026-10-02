@@ -60,7 +60,8 @@
 | Rename organization, quota distribution | `updateOrganization(input)`, `updateOrganizationQuotaDistributionMode`, `assignWorkspaceQuota` | org `manage_workspaces` / `billing` |
 | Enterprise SSO on a white label site | `attachSsoDomain`, `detachSsoDomain`, `generateWorkosAdminPortalLink` | org `whitelabel` |
 | Rules | `createRuleNG(workspaceId, input)`, `updateRuleNG(id, input)`, `deleteRuleNG(id)` | `rules` |
-| Global dashboards | `addDashboard(input)`, `updateDashboard(input)`, `deleteDashboard(dashboard, workspace)`, `createDashboardPublicLink(input)` | `dashboards` |
+| Workspace dashboards | `addDashboard(input)`, `updateDashboard(input)`, `deleteDashboard(dashboard, workspace)`, `createDashboardPublicLink(input)`, `updateDashboardPublicLink(input)`, `deleteDashboardPublicLink(input)`, `updateWorkspace(homeDashboardId)` | `dashboards` |
+| Device dashboard of a product | `updateProduct(input: { product, dashboards, changeMessage })` (layout shared by all devices of the product; `dashboards.md`) | `edit_product` |
 | Exports | `createManualExport(input)`, `createPeriodicExport(input)`, `updatePeriodicExport(input)`, `deleteExport(input)` | `exports` |
 | Reports | `createReportBuilderReport(input)`, `runReportBuilderReport(input)`, `createReport(input)` (energy/legacy CSV), `runReport(report)` | `reports` |
 | Zones | `createZones(input)`, `updateZone(input)`, `deleteZones(input)` | `zones` |
@@ -473,9 +474,9 @@ mutation NewDashboard($input: AddDashboardInputType!) {
 }
 ```
 
-`input`: `{ workspace, name, icon: "dashboard", sharingPolicy: workspace|public|restricted, sharedWith: [userIds], isHomeDashboard, dashboards: "<JSON>", metaJSON: "<JSON>" }`. The `dashboards` JSON is the portal's widget layout; copy one from an existing dashboard (`dashboard(id) { dashboards }`) rather than writing it by hand. `updateDashboard(input: { dashboard, workspace, name, sharingPolicy, dashboards, changeMessage })`, `deleteDashboard(dashboard, workspace)`.
+`input`: `{ workspace, name, icon: "chart-line", type: "CUSTOM", sharingPolicy: workspace|public|restricted, sharedWith: [userIds], isHomeDashboard, dashboards: "<JSON>" }` (`metaJSON` only for CLIMATE/IAQ dashboards). `dashboards` is the widget layout as a JSON string: an array of tabs with widgets keyed by uuid; `"[{\"name\": \"Dashboard\", \"widgets\": {}}]"` creates an empty dashboard. Edit with `updateDashboard(input: { workspace, dashboard, dashboards, changeMessage, name?, icon?, sharingPolicy?, sharedWith? })` (every write replaces the whole layout; fields you omit stay unchanged), delete with `deleteDashboard(dashboard, workspace)`. The device dashboard of a product is written with `updateProduct(input: { product, dashboards, changeMessage })`. Layout format, widget catalogue, server-side preview and `scripts/dashboards.py`: `dashboards.md`. The portal shows API changes only after a page reload.
 
-Public link for a global dashboard:
+Public link for a workspace dashboard:
 
 ```graphql
 mutation DashLink($dashboardId: UUID!) {

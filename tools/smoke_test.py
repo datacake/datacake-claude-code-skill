@@ -284,6 +284,44 @@ def main():
     else:
         print("   (no rules in %s; rule detail and log checks skipped)" % slug)
 
+    # 8a2. dashboards: workspace dashboards and product (device) dashboards parse and validate (read-only)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "datacake", "scripts"))
+    import dashboards as dash_mod  # noqa: E402
+    r = gql(dash_mod.LIST_QUERY, {"id": wid}, token)
+    wd = (r.get("data") or {}).get("workspace") or {}
+    ws_dash = [d for d in wd.get("dashboards") or [] if d.get("type") in (None, "CUSTOM")]
+    products = wd.get("products") or []
+    layouts = []
+    for d in ws_dash:
+        tabs = dash_mod.parse_dashboards(d.get("dashboards") or "[]")
+        dash_mod.normalize(tabs)
+        errors, warnings = dash_mod.validate(tabs, "dashboard") if tabs else ([], [])
+        layouts.append(("dashboard %s" % d["name"], len(tabs), sum(len(t.get("widgets") or {}) for t in tabs), errors, warnings))
+    for p in products:
+        tabs = dash_mod.parse_dashboards(p.get("dashboards") or "[]")
+        dash_mod.normalize(tabs)
+        errors, warnings = dash_mod.validate(tabs, "product") if tabs else ([], [])
+        layouts.append(("product %s" % p["name"], len(tabs), sum(len(t.get("widgets") or {}) for t in tabs), errors, warnings))
+    shapes["dashboards"] = [{"name": n, "tabs": t, "widgets": w, "errors": e[:5], "warnings": wn[:5]} for n, t, w, e, wn in layouts]
+    bad = [n for n, _, _, e, _ in layouts if e]
+    check("dashboards parse + validate (%d workspace dashboards, %d products)" % (len(ws_dash), len(products)), "data" in r and not bad,
+          "widgets=%d%s" % (sum(w for _, _, w, _, _ in layouts), (" invalid: " + ", ".join(bad[:3])) if bad else ""))
+    for n, _, w, _, wn in layouts:
+        if wn:
+            print("   %s: %d warning(s), e.g. %s" % (n, len(wn), wn[0][:120]))
+    if ws_dash:
+        r = gql(dash_mod.DASHBOARD_QUERY, {"id": ws_dash[0]["id"]}, token)
+        d0 = (r.get("data") or {}).get("dashboard") or {}
+        shapes["dashboard_detail"] = {k: v for k, v in d0.items() if k != "dashboards"}
+        check("dashboard(id) detail", bool(d0) and not r.get("errors"), "type=%s sharing=%s publicLinks=%s workspace=%s" % (
+            d0.get("type"), d0.get("sharingPolicy"), len(d0.get("publicLinks") or []), (d0.get("workspace") or {}).get("slug")))
+        r = gql(dash_mod.CHANGELOG_DASHBOARD_QUERY, {"workspace": wid, "dashboard": ws_dash[0]["id"], "first": 2}, token)
+        conn = (((r.get("data") or {}).get("workspace") or {}).get("dashboard") or {}).get("dashboardChangelog")
+        check("dashboard changelog query", "data" in r and not r.get("errors"), "entries=%s historyEnabled=%s" % (
+            len((conn or {}).get("edges") or []) if conn is not None else None, wd.get("entitlementDashboardHistoryEnabled")))
+    else:
+        print("   (no CUSTOM workspace dashboard in %s; dashboard detail check skipped)" % slug)
+
     # 8b. organizations, admins, cross-workspace member visibility, white label sites (read-only)
     r = gql("""query { user { id isApiuser whitelabelSites { id title domain brand } }
       organizations(first: 20, orderBy: NAME_ASC) { totalCount edges { node { id name permissions

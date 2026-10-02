@@ -192,7 +192,7 @@ query Zones($workspaceId: String!, $after: String) {
 | `ID` | string | Relay global ids on `Node` types (zones, exports, organizations); still usable in `zone(id:)` etc. |
 | `DateTime` | ISO 8601 string, e.g. `"2026-03-01T00:00:00Z"` or `"2026-03-01T00:00:00+02:00"` | returned values are UTC with offset `+00:00` |
 | `Date` | `"2026-03-01"` | |
-| `JSONString` | a JSON document **encoded as a string** | `history`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards`, `sidebarConfig`, rule log variables. Parse it (`JSON.parse`, `json.loads`) before use; when sending, stringify first |
+| `JSONString` | a JSON document **encoded as a string** | `history`, `historyStats`, `metadata`, `dashboardData`, `deviceFolders`, `product.dashboards`, `DashboardType.dashboards`, `metaJSON`, `dashboardConfig`, `sidebarConfig`, rule log variables. Parse it (`JSON.parse`, `json.loads`) before use; when sending, stringify first (the schema cannot tell a double-encoded string from a valid one) |
 | `LatLng` | object `{ "latitude": 52.5, "longitude": 13.4 }` | zone centers |
 | `LatLngString` | `"(52.5,13.4)"` | geo field values, set-value actions |
 | `GenericScalar` | any JSON value | error details, validation errors |

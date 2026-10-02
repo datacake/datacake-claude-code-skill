@@ -50,7 +50,7 @@ Organization (billing, quotas, admins, white label)
 | White label site | `WhitelabelSiteType` | `id` (Relay, usable as UUID), `brand`, `domain` | `user.whitelabelSites`, `whitelabelSite(id:)`, `branding`, `brandingForDomain(domain:)` |
 | White label user / audit entry | `WhitelabelUserType` / `AuditLogEntryType` | `id` (Relay) | connections on the site; user ids differ from `UserType.id` |
 | Rule (new engine) | `RuleNGType` | `id` UUID | Workspace-level, one product per rule, optional device/tag filter; see `rules-ng.md` |
-| Dashboard (global) | `DashboardType` | `id` UUID | Device dashboards live in `product.dashboards` |
+| Workspace dashboard | `DashboardType` | `id` UUID | Device dashboards live in `product.dashboards` (one layout per product); format and widgets in `dashboards.md` |
 | Zone | `ZoneType` | `id` (Relay global ID) | Relay connections: `edges { node { … } }` |
 | Export / Report Builder report | `ExportType` / `ReportBuilderReportType` | `id` (Relay global ID) | Runs produce downloadable artifacts |
 
@@ -213,14 +213,15 @@ Legacy rules (`workspace.rules`, `CloudRuleType`, `hasLegacyRules`) are per-devi
 
 ## Dashboards and public links
 
-| | Device dashboard | Global dashboard |
+| | Device dashboard | Workspace dashboard |
 |---|---|---|
-| Defined on | product (`product.dashboards` JSON: tabs/sub-dashboards, widgets); rendered per device with `device.dashboardData` | workspace (`DashboardType.dashboards` JSON), can mix many devices, table widgets, tabs, sidebar folders |
-| Sharing | public link per device: `device.publicLinks`, `createDevicePublicLink(device, input: { token, mode: READ|WRITE })`; viewers use `publicDevice(id:, token:)` | `sharingPolicy` `public`/`workspace`/`restricted` (+ `sharedWith`), public links with optional password: `createDashboardPublicLink`, viewers use `dashboardPublicLink(publicLink: { id, token })` |
+| Defined on | product (`product.dashboards` JSON: tabs, widgets); one layout for every device of the product, rendered with the viewed device's values (`device.dashboardData`) | workspace (`DashboardType.dashboards` JSON, `type` CUSTOM; CLIMATE/IAQ use `metaJSON` settings instead), can mix many devices, tables by tag, maps, semantics aggregates, tabs |
+| Written with | `updateProduct(input: { product, dashboards, changeMessage })` (device permission `edit_product`) | `addDashboard`, `updateDashboard(input: { workspace, dashboard, dashboards, changeMessage })`, `deleteDashboard` (workspace permission `dashboards`) |
+| Sharing | public link per device: `device.publicLinks`, `createDevicePublicLink(device, input: { token, mode: READ|WRITE })`; viewers use `publicDevice(id: <link id>, token:)` | `sharingPolicy` `public`/`workspace`/`restricted` (+ `sharedWith`), public links with optional password: `createDashboardPublicLink`, viewers use `dashboardPublicLink(publicLink: { id, token })` |
 | Write access | WRITE mode allows set-value and downlink widgets through `PublicDeviceAuthType` | WRITE mode likewise via `DashboardPublicLinkAuthInputType` |
-| History | `dashboardChangelog` (entitlement-gated) | `dashboardChangelog` |
+| History | `dashboardChangelog` (entitlement `entitlementDashboardHistoryEnabled`); restore = save an old snapshot | `dashboardChangelog` |
 
-Widgets (portal): value, chart, map, image map, table, measurement list, boolean, heatmap, histogram, scatter, ASHRAE, cooling health, text, iframe, image, menu, SOS, downlink, set value. Custom frontends do not need the dashboard JSON; they query fields directly.
+Both kinds share one JSON format (array of tabs → widgets keyed by uuid → `widget` type, `layouts.lg` on a 12-column grid, `meta`). Every write replaces the whole layout and the portal shows it only after a page reload. Widget types (Value, Boolean, Headline, Text, LineChart, Histogram, Heatmap, Table, MapNG, MeasurementList, Switch, Slider, SetValue, Downlink, Button, Image, Iframe, OnlineStatus and the portal-only ImageMap, Menu, ScatterPlot, AshraeChart, CoolingHealth, SOS), their `meta`, mutations, recipes and `scripts/dashboards.py`: `dashboards.md`. Custom frontends do not need the dashboard JSON; they query fields directly.
 
 ## Reports and exports
 

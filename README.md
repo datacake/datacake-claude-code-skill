@@ -5,9 +5,9 @@ An [Agent Skill](https://agentskills.io) that teaches Claude Code and other AI a
 The skill bundles:
 
 - `skills/datacake/SKILL.md` – the entry point: Datacake mental model, essential queries, decision guide, hard rules and workflows.
-- `skills/datacake/reference/` – platform concepts, API basics, device/measurement/semantics query references, mutations, the Rule Engine NG (rules, conditions, actions, notification templates, logs), organizations and members, a curated schema map, the full GraphQL schema (SDL), and playbooks for Next.js and Expo apps and analytics scripts.
+- `skills/datacake/reference/` – platform concepts, API basics, device/measurement/semantics query references, mutations, the Rule Engine NG (rules, conditions, actions, notification templates, logs), Datacake dashboards (workspace and device dashboards, layout JSON, widget catalogue, edit workflow), organizations and members, a curated schema map, the full GraphQL schema (SDL), and playbooks for Next.js and Expo apps and analytics scripts.
 - `skills/datacake/assets/brand/` – Datacake logo files (wordmark black/white, icon mark, favicon, app icons) used as the default branding of generated frontends when the user supplies none; colour tokens and usage in `reference/branding.md`. Trademark notice in `assets/brand/README.md`.
-- `skills/datacake/scripts/` – dependency-free Python 3 helpers: `dc.py` (run GraphQL operations), `discover.py` (map a workspace: products, field identifiers and ids, tags, semantics, downlinks), `members.py` (members, invites, API users), `rules.py` (Rule Engine NG: ids, list, get, export, create, update, enable/disable, delete, logs), `history_to_csv.py` (historical data to CSV with resolution and per-bucket aggregation such as `LAST` meter readings, long ranges split within the API limits), `fetch_schema.py` (refresh the bundled schema).
+- `skills/datacake/scripts/` – dependency-free Python 3 helpers: `dc.py` (run GraphQL operations), `discover.py` (map a workspace: products, field identifiers and ids, tags, semantics, downlinks), `members.py` (members, invites, API users), `rules.py` (Rule Engine NG: ids, list, get, export, create, update, enable/disable, delete, logs), `dashboards.py` (workspace and device dashboards: list, get, widget catalogue and Value presets, generate a device dashboard or a fleet overview from a product's fields, server-side check, create, add/update/move/remove widgets, tabs, save, changelog, restore, delete), `history_to_csv.py` (historical data to CSV with resolution and per-bucket aggregation such as `LAST` meter readings, long ranges split within the API limits), `fetch_schema.py` (refresh the bundled schema).
 
 ## Install
 
@@ -53,9 +53,10 @@ python3 skills/datacake/scripts/dc.py 'query { user { id email } }'
 python3 skills/datacake/scripts/discover.py                 # workspaces; add --orgs for organizations
 python3 skills/datacake/scripts/members.py list <workspace> # members, invites, API users (--csv for export)
 python3 skills/datacake/scripts/rules.py list <workspace>   # Rule Engine NG rules; rules.py ids <workspace> prints the ids a new rule needs
+python3 skills/datacake/scripts/dashboards.py list <workspace>   # workspace dashboards and device dashboards (per product); get/check/add-widget/save edit them
 ```
 
-Admin tooling (organizations, members, invites, white label users, audit log) is covered in `skills/datacake/reference/organizations-and-members.md`; `members.py invite|move|remove` run the bulk operations as a dry run unless `--execute` is given. Alerting and automation (Rule Engine NG) is covered in `skills/datacake/reference/rules-ng.md`; `rules.py create|update|enable|disable|delete` are dry runs without `--execute`.
+Admin tooling (organizations, members, invites, white label users, audit log) is covered in `skills/datacake/reference/organizations-and-members.md`; `members.py invite|move|remove` run the bulk operations as a dry run unless `--execute` is given. Alerting and automation (Rule Engine NG) is covered in `skills/datacake/reference/rules-ng.md`; `rules.py create|update|enable|disable|delete` are dry runs without `--execute`. Datacake dashboards (layout JSON, widget catalogue, edit workflow) are covered in `skills/datacake/reference/dashboards.md`; `dashboards.py` writes are dry runs without `--execute`, re-read the dashboard before writing and remind you that the portal shows changes only after a page reload.
 
 Never commit tokens. The skill instructs agents to keep tokens server-side in any app they build.
 

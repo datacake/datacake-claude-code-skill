@@ -246,8 +246,8 @@ Reading members needs the `members` permission. For "what may I do with this dev
 Viewers with a public link do not need an account:
 
 ```graphql
-query Public($deviceId: String!, $token: String!) {
-  publicDevice(id: $deviceId, token: $token) {
+query Public($linkId: String!, $token: String!) {
+  publicDevice(id: $linkId, token: $token) {
     id verboseName online lastHeard tags
     roleFields { role value field { fieldName unit } }
     temperature: numericSemanticField(semantic: TEMPERATURE) { value }
@@ -256,7 +256,7 @@ query Public($deviceId: String!, $token: String!) {
 }
 ```
 
-`publicDevice` exposes semantics, role fields and dashboard data, not `currentMeasurements`/`history`. Write actions in WRITE mode use `setValue`/`sendDownlink` with `publicDeviceAuth: { link, token }`.
+`id` is the **public link id** (`device.publicLinks { id token mode }`, created with `createDevicePublicLink`), not the device id; `token` is the link's password. `publicDevice` exposes semantics, role fields and dashboard data (`dashboards`, `dashboardData`), not `currentMeasurements`/`history`. Write actions in WRITE mode use `setValue`/`sendDownlink` with `publicDeviceAuth: { link, token }`.
 
 ## Performance patterns and tag strategy
 
